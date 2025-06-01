@@ -1,0 +1,24 @@
+*.txt
+*.log
+*.tmp
+*.bak
+*.swp
+*.DS_Store
+*.idea/
+*.vscode/
+*.env
+*.pyc
+*.pyo
+*.pyd
+*/build/
+*.egg-info/
+# Ignore Python cache files
+*.__pycache__/
+*/vcpkg_installed/
+*/vcpkg_buildtrees/
+*/vcpkg_downloads/
+*/vcpkg_config/
+*/vcpkg_toolchains/
+*/vcpkg/
+*/x64-linux/
+# Ignore CMake cache files

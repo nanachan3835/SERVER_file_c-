@@ -1,0 +1,16 @@
+{
+  "name": "file-server-project",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "asio",        
+    "openssl",     
+    "nlohmann-json", 
+    "gtest",
+    "sqlite3",
+    {
+      "name": "poco",
+      "features": ["net", "netssl", "util", "json", "xml"] 
+    } 
+  ],
+  "builtin-baseline": "8f54ef5453e7e76ff01e15988bf243e7247c5eb5"
+}
