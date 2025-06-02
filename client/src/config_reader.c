@@ -2,6 +2,8 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 Config *config_create(void) {
     Config *config = (Config*) malloc(sizeof(Config));

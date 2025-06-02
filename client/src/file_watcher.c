@@ -1,20 +1,26 @@
 #include "file_watcher.h"
 
-WatchNode *watch_list = NULL;
+#include <dirent.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 
-// Thêm watch vào danh sách quản lý
-void add_watch_entry(int wd, const char *path) {
-    WatchNode *node = (WatchNode*) malloc(sizeof(WatchNode));
+static WatchNode *watch_list = NULL;
+
+// Thêm watch vào danh sách và ghi nhớ wd và đường dẫn
+static void add_watch_entry(int wd, const char *path) {
+    WatchNode *node = (WatchNode *)malloc(sizeof(WatchNode));
     node->wd = wd;
     node->path = strdup(path);
     node->next = watch_list;
     watch_list = node;
 }
 
-const char* get_path_from_wd(int wd) {
+const char *get_path_from_wd(int wd) {
     WatchNode *curr = watch_list;
     while (curr) {
-        if (curr->wd == wd) return curr->path;
+        if (curr->wd == wd)
+            return curr->path;
         curr = curr->next;
     }
     return NULL;
