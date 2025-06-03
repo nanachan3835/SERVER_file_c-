@@ -1,9 +1,13 @@
 #include "config_reader.h"
 #include "file_watcher.h"
+#include "sync.h"
 
+#include "json.hpp"
+#include "utils.hpp"
 #include <atomic>
 #include <cerrno>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -11,6 +15,8 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+
+using json = nlohmann::json;
 
 const char *get_watch_dir() {
     Config *config = config_read("config.conf");
@@ -145,10 +151,120 @@ class FileWatcherHelper {
     }
 };
 
+namespace app {
+struct AppData {
+    std::vector<std::string> paths_on_server;
+};
+void to_json(json &j, const AppData &p) { j = json{{"paths_on_server", p.paths_on_server}}; }
+
+void from_json(const json &j, AppData &p) { j.at("paths_on_server").get_to(p.paths_on_server); }
+} // namespace app
+class SyncHelper {
+  public:
+    SyncHelper(const char *serverUrl, const char *username, const char *password) {
+        server = init_sync_server(serverUrl, username, password);
+        if (!server) {
+            throw std::runtime_error("Không thể khởi tạo máy chủ đồng bộ hóa.");
+        }
+        app_data = {};
+        get_app_data();
+    }
+
+    ~SyncHelper() {
+        if (server) {
+            free_sync_server(server);
+            server = nullptr;
+        }
+        if (app_data_file.is_open()) {
+            save_app_data();
+            app_data_file.close();
+        }
+    }
+
+    void upload(const char *pathFromWatcherRoot) {
+        SyncErrorCode sync_errno = sync_upload(server, pathFromWatcherRoot);
+
+        throw_if_error(sync_errno, pathFromWatcherRoot);
+    }
+    SyncErrorCode download(const char *path) { return sync_download(server, path); }
+    SyncErrorCode delete_file(const char *path) { return sync_delete(server, path); }
+    SyncErrorCode get_file_list(const char *path, char *responseBuffer, size_t bufferSize) {
+        return sync_get_file_list(server, path, responseBuffer, bufferSize);
+    }
+
+  private:
+    Server *server;
+    app::AppData app_data;
+    std::fstream app_data_file;
+
+    void throw_if_error(SyncErrorCode code, const std::string &context) {
+        switch (code) {
+        case SYNC_SUCCESS:
+            // std::cout << "Tải lên thành công: " << context << std::endl;
+            break;
+        case SYNC_ERROR_INVALID_URL:
+            std::runtime_error("Lỗi: Địa chỉ máy chủ không hợp lệ");
+            break;
+        case SYNC_ERROR_CONNECTION_FAILED:
+            std::runtime_error("Lỗi: Kết nối đến máy chủ không thành công.");
+            break;
+        case SYNC_ERROR_AUTH_FAILED:
+            std::runtime_error("Lỗi: Xác thực không thành công.");
+            break;
+        case SYNC_ERROR_TIMEOUT:
+            std::runtime_error("Lỗi: Thời gian chờ hết hạn khi kết nối đến máy chủ.");
+            break;
+        case SYNC_ERROR_FILE_NOT_FOUND:
+            std::runtime_error(std::string("Lỗi: Tệp không tìm thấy: ") + context);
+            break;
+        case SYNC_ERROR_UNKNOWN:
+            std::runtime_error(std::string("Lỗi: Lỗi không xác định khi tải lên tệp: ") + context);
+            break;
+        default:
+            std::runtime_error(std::string("Lỗi không xác định: ") + sync_strerror(code));
+            break;
+        }
+    }
+
+    void get_app_data() {
+        if (!app_data_file.is_open()) {
+            app_data_file.open("app_data.json");
+            if (!app_data_file) {
+                throw std::runtime_error("Không thể mở file app_data.json");
+            }
+        }
+
+        std::stringstream buffer;
+        buffer << app_data_file.rdbuf();
+
+        std::string content = buffer.str();
+
+        trim(content);
+
+        if (content.empty()) {
+            app_data.paths_on_server = {};
+        } else {
+            json data = json::parse(app_data_file);
+            app_data.paths_on_server = data.template get<std::vector<std::string>>();
+        }
+    }
+
+    void save_app_data() {
+        if (!app_data_file.is_open()) {
+            app_data_file.open("app_data.json", std::ios::out | std::ios::trunc);
+            if (!app_data_file) {
+                throw std::runtime_error("Không thể mở file app_data.json để ghi");
+            }
+        }
+
+        json j = app_data;
+    }
+};
+
 int main() {
     // ! note to my future self:
     // * Delete = IN_DELETE but may be IN_MOVED_TO if file is moved to trash, be careful to handle this GNOME
-    // behavior
+    // * behavior
     // * Rename = IN_MOVED_TO then IN_MOVED_FROM in 2 continuous but different callbacks
     // * so callback should not directly call sync functions
     // * instead callback should append to queue buffer then sync functions should handle the queue

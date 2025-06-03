@@ -33,6 +33,8 @@ SyncErrorCode sync_download(Server *server, const char *path);
 
 SyncErrorCode sync_delete(Server *server, const char *path);
 
+SyncErrorCode sync_rename(Server *server, const char *oldPath, const char *newPath);
+
 SyncErrorCode sync_get_file_list(Server *server, const char *path, char* responseBuffer, size_t bufferSize);
 
 #ifdef __cplusplus
