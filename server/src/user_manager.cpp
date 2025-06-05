@@ -105,6 +105,9 @@ std::optional<int> UserManager::register_user(const std::string& username, const
     return user_id;
 }
 
+
+
+
 std::optional<int> UserManager::login_user(const std::string& username, const std::string& password) {
     std::string sql = "SELECT id, password_hash FROM users WHERE username = ?;";
     sqlite3_stmt* stmt;

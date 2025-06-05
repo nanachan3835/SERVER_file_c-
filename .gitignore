@@ -11,7 +11,14 @@
 *.pyo
 *.pyd
 **/build/
+/build
 *.egg-info/
+**/docs/
+**/log/
+**/db/
+**/data/ 
+build/
+/build/
 # Ignore Python cache files
 *.__pycache__/
 **/vcpkg_installed/
@@ -24,8 +31,14 @@
 **/error/
 **/installed/
 **/data/
-
+/vcpkg_installed/
+/vcpkg_installed
+vcpkg_installed/
 *.cc
 *.3
 *.a
 # Ignore CMake cache files
+/linux/
+/linux
+**/linux/
+linux/
