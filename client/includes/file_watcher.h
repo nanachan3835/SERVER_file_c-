@@ -5,9 +5,9 @@ extern "C" {
 
 #include <sys/inotify.h>
 
-#define EVENT_SIZE (sizeof(struct inotify_event))
+#define EVENT_SIZE sizeof(struct inotify_event)
 #define EVENT_BUF_LEN (1024 * (EVENT_SIZE + 16))
-#define WATCH_FLAGS ( IN_CREATE | IN_MODIFY | IN_DELETE | IN_MOVED_TO | IN_MOVED_FROM | IN_ISDIR )
+#define WATCH_FLAGS ( IN_CREATE | IN_CLOSE_WRITE | IN_DELETE | IN_MOVED_TO | IN_MOVED_FROM )
 
 // Cấu trúc liên kết watch descriptor (wd) với đường dẫn
 typedef struct WatchNode {

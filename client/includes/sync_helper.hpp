@@ -1,7 +1,6 @@
 #pragma once
 
 #include "config_reader.h"
-#include "file_watcher_helper.hpp"
 #include "sync.h"
 #include "utils.hpp"
 
@@ -123,63 +122,6 @@ class SyncHelper {
             throw std::runtime_error("Lỗi: Phản hồi json có định dạng không hợp lệ từ máy chủ.");
 
         return paths;
-    }
-
-    void process_watch_events(TSQueue<FileWatcherHelper::WatchEvent> &watch_events_buffer) {
-
-        std::vector<FileWatcherHelper::WatchEvent> events;
-
-        // move items to local vector to avoid holding the lock for too long
-        watch_events_buffer.lock();
-        while (!watch_events_buffer.get()->empty()) {
-            events.push_back(watch_events_buffer.get()->front());
-            watch_events_buffer.get()->pop();
-        }
-        watch_events_buffer.unlock();
-
-        // std::pair<FileWatcherHelper::FileEvent, std::string> previous_event;
-        for (size_t i = 0; i < events.size(); ++i) {
-            auto &current_event = events[i];
-            switch (current_event.inotify_event) {
-            case FileWatcherHelper::InotifyEvent::CREATED:
-                upload(current_event.path_from_watcher_root.c_str());
-                break;
-            case FileWatcherHelper::InotifyEvent::MODIFIED:
-                upload(current_event.path_from_watcher_root.c_str());
-                break;
-            case FileWatcherHelper::InotifyEvent::DELETED:
-                delete_file(current_event.path_from_watcher_root.c_str());
-                break;
-
-            case FileWatcherHelper::InotifyEvent::MOVED_TO:
-                upload(current_event.path_from_watcher_root.c_str());
-                break;
-            case FileWatcherHelper::InotifyEvent::MOVED_FROM:
-                if (i + 1 < events.size()) {
-                    auto &next_event = events[i + 1];
-                    if (next_event.inotify_event == FileWatcherHelper::InotifyEvent::MOVED_TO &&
-                        is_same_dir(current_event.path_from_watcher_root,
-                                    next_event.path_from_watcher_root)) {
-                        rename(current_event.path_from_watcher_root.c_str(),
-                               next_event.path_from_watcher_root.c_str());
-                        ++i; // skip the next event since we already handled it
-                    } else {
-                        delete_file(current_event.path_from_watcher_root.c_str());
-                    }
-                } else {
-                    delete_file(current_event.path_from_watcher_root.c_str());
-                }
-                break;
-            case FileWatcherHelper::InotifyEvent::CLOSED_WRITE:
-                //! dont know wtf this event is???
-                upload(current_event.path_from_watcher_root.c_str());
-                break;
-            default:
-                std::cerr << "Lỗi: Sự kiện không xác định: " << static_cast<int>(current_event.inotify_event)
-                          << "\n";
-                break;
-            }
-        }
     }
 
   private:

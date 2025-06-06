@@ -1,9 +1,12 @@
 #pragma once
 
 #include "file_watcher.h"
+#include "utils.hpp"
 
 #include <atomic>
 #include <cerrno>
+#include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <iostream>
@@ -11,31 +14,42 @@
 #include <string>
 #include <thread>
 #include <unistd.h>
+#include <unordered_map>
 
+#ifdef DEBUG
+#define LOG(x) std::cout << x << std::endl
+#endif
+
+// TODO
+// TODO nhớ xóa hết cout sau khi debug xong
+// TODO
 class FileWatcherHelper {
   public:
     enum class InotifyEvent {
         CREATED,
-        MODIFIED,
+        MODIFIED, // ko dùng, keep for consumer code compatibility reason
         DELETED,
         MOVED_TO,
         MOVED_FROM,
         CLOSED_WRITE,
+        RENAME,
     };
     struct WatchEvent {
         InotifyEvent inotify_event;
         std::string path_from_watcher_root;
+        // empty if not rename event
+        std::string rename_to;
     };
     using Callback = std::function<void(WatchEvent)>;
 
-    FileWatcherHelper(const std::string &watcherRootPath) : fd(inotify_init1(IN_NONBLOCK)) {
-        if (fd < 0) {
+    FileWatcherHelper(const std::string &watcherRootPath) : inotify_fd(inotify_init1(IN_NONBLOCK)) {
+        if (inotify_fd < 0) {
             auto errMsg = std::string("inotify_init failed: ") + strerror(errno) + "\n";
             std::cerr << errMsg;
-            std::runtime_error(errMsg.c_str());
+            throw std::runtime_error(errMsg.c_str());
         }
         watching = true;
-        add_watch_recursive(fd, watcherRootPath.c_str());
+        add_watch_recursive(inotify_fd, watcherRootPath.c_str());
         // Bắt đầu luồng theo dõi
         watcher_thread = std::thread(&FileWatcherHelper::start_watching, this);
     }
@@ -45,42 +59,102 @@ class FileWatcherHelper {
         if (watcher_thread.joinable()) {
             watcher_thread.join();
         }
-        free_watch_list(fd);
-        close(fd);
+        free_watch_list(inotify_fd);
+        close(inotify_fd);
     }
+
+    FileWatcherHelper(FileWatcherHelper &&) = delete;
+    FileWatcherHelper &operator=(FileWatcherHelper &&) = delete;
 
     void add_callback(Callback cb) { callbacks.push_back(std::move(cb)); }
 
   private:
+    struct PendingRenameEvent {
+        std::chrono::steady_clock::time_point timestamp;
+        std::string old_path;
+    };
+
+    using inotify_cookie_t = uint32_t;
+
     std::vector<Callback> callbacks;
     char buffer[EVENT_BUF_LEN];
-    int fd;
+    int inotify_fd;
     std::atomic<bool> watching;
     std::thread watcher_thread;
+    std::unordered_map<inotify_cookie_t, PendingRenameEvent> pending_renames;
 
-    void notify_callbacks(InotifyEvent event, const std::string &pathFromWatcherRoot) {
+    constexpr static auto PendingRenameTimeout = std::chrono::seconds(2);
+
+    void notify_callbacks(WatchEvent watch_event) {
         for (const auto &cb : callbacks) {
-            cb({event, pathFromWatcherRoot});
+            cb(watch_event);
+        }
+    }
+
+    // Xóa các sự kiện pending rename đã quá hạn mà không có sự kiện MOVED_TO tương ứng
+    void cleanup_pending_renames() {
+        auto now = std::chrono::steady_clock::now();
+        for (auto it = pending_renames.begin(); it != pending_renames.end();) {
+            if (now - it->second.timestamp > PendingRenameTimeout) {
+                notify_callbacks({InotifyEvent::MOVED_FROM, it->second.old_path});
+                it = pending_renames.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
 
     void handle_event_create(inotify_event *event, const std::string &full_path) {
         std::cout << "Created: " << full_path << std::endl;
-        notify_callbacks(InotifyEvent::CREATED, full_path);
+        notify_callbacks({InotifyEvent::CREATED, full_path});
         if (event->mask & IN_ISDIR) {
             // Nếu là taoj thư mục, thêm watch đệ quy
-            add_watch_recursive(fd, full_path.c_str());
+            add_watch_recursive(inotify_fd, full_path.c_str());
+        }
+    }
+
+    void handle_event_moved_from(inotify_event *event, const std::string &full_path) {
+        if (event->cookie == 0) {
+            // not rename
+            std::cout << "Moved from: " << full_path << std::endl;
+            notify_callbacks({InotifyEvent::MOVED_FROM, full_path});
+            return;
+        }
+        pending_renames[event->cookie] = {std::chrono::steady_clock::now(), full_path};
+    }
+
+    void handle_event_moved_to(inotify_event *event, const std::string &full_path) {
+        if (event->cookie == 0) {
+            // not rename
+            std::cout << "Moved to: " << full_path << std::endl;
+            notify_callbacks({InotifyEvent::MOVED_TO, full_path});
+            return;
+        }
+        auto it = pending_renames.find(event->cookie);
+        if (it != pending_renames.end()) {
+            auto &rename_event = it->second;
+            // Rename event
+            std::cout << "Renamed from: " << rename_event.old_path << " to: " << full_path << std::endl;
+            notify_callbacks({InotifyEvent::RENAME, rename_event.old_path, full_path});
+            pending_renames.erase(it);
+        } else {
+            // related rename not found, just a move
+            std::cout << "Moved to: " << full_path << std::endl;
+            notify_callbacks({InotifyEvent::MOVED_TO, full_path});
         }
     }
 
     void start_watching() {
+        set_interval([this]() { cleanup_pending_renames(); }, PendingRenameTimeout);
+
         while (true) {
             if (!watching) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                std::this_thread::sleep_for(std::chrono::seconds(1));
                 std::cout << "Đang tạm dừng theo dõi...\n";
                 continue;
             }
-            int length = read(fd, buffer, EVENT_BUF_LEN);
+
+            int length = read(inotify_fd, buffer, EVENT_BUF_LEN);
             if (length < 0) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -99,22 +173,28 @@ class FileWatcherHelper {
                     if (event->mask & IN_CREATE) {
                         handle_event_create(event, full_path);
                     }
-                    if (event->mask & IN_MODIFY) {
-                        notify_callbacks(InotifyEvent::MODIFIED, full_path);
-                    }
+                    // if (event->mask & IN_MODIFY) {
+                    //     notify_callbacks({InotifyEvent::MODIFIED, full_path});
+                    // }
                     if (event->mask & IN_DELETE) {
-                        notify_callbacks(InotifyEvent::DELETED, full_path);
+                        notify_callbacks({InotifyEvent::DELETED, full_path});
                     }
                     if (event->mask & IN_MOVED_TO) {
-                        notify_callbacks(InotifyEvent::MOVED_TO, full_path);
+                        handle_event_moved_to(event, full_path);
                     }
                     if (event->mask & IN_MOVED_FROM) {
-                        notify_callbacks(InotifyEvent::MOVED_FROM, full_path);
+                        handle_event_moved_from(event, full_path);
                     }
 
                     if (event->mask & IN_CLOSE_WRITE) {
-                        notify_callbacks(InotifyEvent::CLOSED_WRITE, full_path);
+                        notify_callbacks({InotifyEvent::CLOSED_WRITE, full_path});
                     }
+
+                    if (event->mask & IN_Q_OVERFLOW) {
+                        std::cerr << "Warning: inotify queue overflow. Events may have been lost.\n";
+                        continue;
+                    }
+
                 } else {
                     std::cerr << "Không tìm thấy đường dẫn cho wd: " << event->wd << "\n";
                 }

@@ -1,7 +1,6 @@
 #include "config_reader.h"
-#include "sync_helper.hpp"
 #include "file_watcher_helper.hpp"
-#include "utils.hpp"
+#include "sync_helper.hpp"
 
 #include <cerrno>
 #include <iostream>
@@ -15,38 +14,30 @@ const char *get_watch_dir() {
     const char *watch_dir = config_get(config, "watcher_root");
     if (!watch_dir) {
         std::cerr << "Không tìm thấy watcher_root trong file cấu hình.\n";
-        std::runtime_error("Không tìm thấy watcher_root trong file cấu hình.");
+        throw std::runtime_error("Không tìm thấy watcher_root trong file cấu hình.");
     }
     if (watch_dir[0] != '/') {
-        std::cerr << (stderr, "watcher_root phải là đường dẫn tuyệt đối.\n");
-        std::runtime_error("watcher_root phải là đường dẫn tuyệt đối.");
+        std::cerr << "watcher_root phải là đường dẫn tuyệt đối.\n";
+        throw std::runtime_error("watcher_root phải là đường dẫn tuyệt đối.");
     }
     if (access(watch_dir, F_OK) != 0) {
         auto errMsg = std::string("Thư mục ") + watch_dir + " không tồn tại.\n";
         std::cerr << errMsg;
-        std::runtime_error(errMsg.c_str());
+        throw std::runtime_error(errMsg.c_str());
     }
     if (access(watch_dir, R_OK | W_OK) != 0) {
         auto errMsg = std::string("Không có quyền đọc/ghi thư mục ") + watch_dir + ".\n";
         std::cerr << errMsg;
-        std::runtime_error(errMsg.c_str());
+        throw std::runtime_error(errMsg.c_str());
     }
     config_free(config);
     return watch_dir;
 }
 
 int main() {
-    // ! note to my future self:
-    // * Delete = IN_DELETE but may be IN_MOVED_TO if file is moved to trash, be careful to handle this GNOME
-    // * behavior
-    // * Rename = IN_MOVED_TO then IN_MOVED_FROM in 2 continuous but different callbacks
-    // * so callback should not directly call sync functions
-    // * instead callback should append to queue buffer then sync functions should handle the queue
     const char *watch_dir = get_watch_dir();
-    SyncHelper sync_helper;
-    TSQueue<FileWatcherHelper::WatchEvent> watch_events_buffer;
-    int last_watch_time = 0;
-    sync_helper.get_files_list(watch_dir);
+    // SyncHelper sync_helper;
+    // sync_helper.get_files_list(watch_dir);
 
     //* do something with the files list
 
@@ -57,7 +48,7 @@ int main() {
         case FileWatcherHelper::InotifyEvent::CREATED:
             std::cout << "Callback: File created: " << event.path_from_watcher_root << std::endl;
             break;
-        case FileWatcherHelper::InotifyEvent::MODIFIED:
+        case FileWatcherHelper::InotifyEvent::MODIFIED: // not use
             std::cout << "Callback: File modified: " << event.path_from_watcher_root << std::endl;
             break;
         case FileWatcherHelper::InotifyEvent::DELETED:
@@ -72,24 +63,19 @@ int main() {
         case FileWatcherHelper::InotifyEvent::MOVED_FROM:
             std::cout << "Callback: File moved away: " << event.path_from_watcher_root << std::endl;
             break;
+        case FileWatcherHelper::InotifyEvent::RENAME:
+            std::cout << "Callback: File renamed from " << event.path_from_watcher_root << " to "
+                      << event.rename_to << std::endl;
+            // sync_helper.rename(event.path_from_watcher_root.c_str(), event.rename_to.c_str());
+            break;
         default:
             std::cerr << "Callback: Unknown event for path: " << event.path_from_watcher_root << std::endl;
             break;
         }
-        last_watch_time = time(nullptr);
     });
 
     while (true) {
+        // keep the program running to watch for file changes
         std::this_thread::sleep_for(std::chrono::seconds(5));
-        if (time(nullptr) - last_watch_time < 1) {
-            // recent activity, skip processing
-            std::cout << "gần đây vừa có sự thay đổi file, tạm dừng xử lý hàng đợi sự kiện" << std::endl;
-            continue;
-        }
-        try {
-            sync_helper.process_watch_events(watch_events_buffer);
-        } catch (const std::runtime_error &e) {
-            std::cerr << "Lỗi runtime trong quá trình đồng bộ: " << e.what() << std::endl;
-        }
     }
 }

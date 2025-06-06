@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <string>
-#include <condition_variable>
+// #include <condition_variable>
 #include <mutex>
 #include <queue>
+#include <thread>
 
 
 inline void ltrim(std::string &s) {
@@ -46,6 +48,16 @@ inline bool is_same_dir(const std::string& path1, const std::string& path2) {
     return dir1 == dir2;
 }
 
+template <typename Rep, typename Period>
+inline void set_interval(std::function<void()> callback, std::chrono::duration<Rep, Period> interval) {
+    std::thread([callback = std::move(callback), interval]() {
+        while (true) {
+            std::this_thread::sleep_for(interval);
+            callback();
+        }
+    }).detach();
+}
+
 
 // Thread-safe queue
 template <typename T>
@@ -58,7 +70,7 @@ private:
     std::mutex m_mutex;
 
     // Condition variable for signaling
-    std::condition_variable m_cond;
+    // std::condition_variable m_cond;
 
 public:
     // Push an element to the queue
@@ -67,16 +79,16 @@ public:
         m_queue.push(item);
     }
 
-    // // Pop an element from the queue
-    // bool pop(T& item) {
-    //     std::lock_guard<std::mutex> lock(m_mutex);
-    //     if (m_queue.empty()) {
-    //         return false;
-    //     }
-    //     item = m_queue.front();
-    //     m_queue.pop();
-    //     return true;
-    // }
+    // Pop an element from the queue
+    bool pop(T& item) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_queue.empty()) {
+            return false;
+        }
+        item = m_queue.front();
+        m_queue.pop();
+        return true;
+    }
 
     // Check if queue is empty
     bool empty() {
