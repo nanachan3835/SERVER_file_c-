@@ -18,12 +18,19 @@
 #include <Poco/Mutex.h>
 #include <nlohmann/json.hpp> // For JSON manipulation
 
+
+//#include <Poco/Net/HTMLForm.h>
+#include <Poco/Net/PartHandler.h>
+#include <Poco/Net/MessageHeader.h>
+#include <Poco/Net/NameValueCollection.h>
+#include <Poco/StreamCopier.h>
+
 #include <string>
 #include <vector>
 #include <map>
 #include <optional>
 #include <memory> // For std::unique_ptr if FileServerApp owns managers
-
+#include <cstring> 
 // POCO using declarations
 using Poco::Net::HTTPRequestHandler;
 using Poco::Net::HTTPRequestHandlerFactory;

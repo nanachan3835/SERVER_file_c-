@@ -12,7 +12,13 @@
 #include <Poco/Net/PartHandler.h>
 #include <Poco/Net/MessageHeader.h>
 #include <Poco/Net/NameValueCollection.h>
+#include <Poco/Exception.h>
 
+
+
+//#include <Poco/Net/MessageHeader.h>
+//#include <Poco/Net/NameValueCollection.h>
+//#include <Poco/StreamCopier.h>
 
 #include <fstream>
 #include <sstream>
@@ -333,11 +339,15 @@ void APIRouterHandler::handleUserMe(HTTPServerRequest& request, HTTPServerRespon
 
 // File & Directory Handlers
 void APIRouterHandler::handleFileUpload(HTTPServerRequest& request, HTTPServerResponse& response, const ActiveSession& session) {
-    if (request.getContentType().rfind("multipart/form-data", 0) != 0) {
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Content-Type must be multipart/form-data.");
-        return;
-    }
+    // if (request.getContentType().rfind("multipart/form-data", 0) != 0) {
+    //     sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Content-Type must be multipart/form-data.");
+    //     return;
+    // }
+    std::cout << "[Server Upload] Received multipart request. Content-Type: " << request.getContentType() << std::endl;
 
+    std::cout << "[SERVER DEBUG UPLOAD] User: " << session.username << ", HomeDir: " << session.home_dir << std::endl;
+    std::cout << "[SERVER DEBUG UPLOAD] Request Content-Type: " << request.getContentType() << std::endl;
+    std::cout << "[SERVER DEBUG UPLOAD] Request Content-Length: " << request.getContentLength() << std::endl;
     std::string relative_path_from_header = request.get(HttpHeaders::FILE_RELATIVE_PATH, "");
 
     class FileUploadPartHandler : public Poco::Net::PartHandler {
@@ -370,51 +380,71 @@ void APIRouterHandler::handleFileUpload(HTTPServerRequest& request, HTTPServerRe
 
     FileUploadPartHandler partHandler;
     //HTMLForm form_processor(partHandler); // Chỉ định PartHandler
-    Poco::Net::HTMLForm form_processor(request, request.stream(), partHandler);
+    //Poco::Net::HTMLForm form_processor(request, request.stream(), partHandler);
     // Poco::Net::HTMLForm form_processor(request.getContentType(), partHandler); // Cần contentType
     try {
-    // load sẽ đọc stream và gọi PartHandler
-    form_processor.load(request, request.stream());
+
+        Poco::Net::HTMLForm form(request, request.stream(), partHandler);
+        // SAU DÒNG NÀY, request.stream() ĐÃ ĐƯỢC ĐỌC VÀ PARSE.
+        // KHÔNG CẦN GỌI form.load() hay form.read() nữa.
+        // Tất cả thông tin từ các part đã được xử lý bởi partHandler.handlePart().
+
+        // 4. Lấy thông tin đã được parse bởi PartHandler
+        std::string relative_path_from_header = request.get(HttpHeaders::FILE_RELATIVE_PATH, "");
+        std::string final_relative_path = relative_path_from_header;
+
+        if (final_relative_path.empty()) {
+            final_relative_path = partHandler.relativePathFromField;
+         // Lấy từ part "relativePath" nếu có
+           std::cout<< "[Server Upload] No relative path from header, using part field: '" << final_relative_path << "'" << std::endl; // Debug
+        }
+        
+        // std::cout << "[Server Upload] Final relativePath: '" << final_relative_path << "'" << std::endl; // Debug
+        // std::cout << "[Server Upload] Original Filename from PartHandler: '" << partHandler.originalFileName << "'" << std::endl; // Debug
+
+        if (final_relative_path.empty() || Poco::Path(final_relative_path).isAbsolute() || final_relative_path.find("..") != std::string::npos) {
+            sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid or missing relative path for upload. Received: '" + final_relative_path + "'");
+            return;
+        }
+
+        if (!partHandler.pFileStream || partHandler.originalFileName.empty() || partHandler.originalFileName == "(unspecified)") {
+            sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Missing 'file' part, filename, or file content in multipart form. Original Filename: '" + partHandler.originalFileName + "'");
+            return;
+        }
+        
+        std::string file_content_str = partHandler.pFileStream->str();
+        std::vector<char> file_data_vec(file_content_str.begin(), file_content_str.end());
+
+        // ... (Phần ACL check và gọi fileManager_.upload_file giữ nguyên như trước)
+        fs::path target_abs_fs_path = fs::path(session.home_dir) / final_relative_path;
+        PermissionLevel perm = access_control_manager_.get_permission(session.user_id, target_abs_fs_path.parent_path());
+        if (perm < PermissionLevel::READ_WRITE) {
+            sendErrorResponse(response, HTTPResponse::HTTP_FORBIDDEN, "Permission denied to write to target location: " + target_abs_fs_path.parent_path().string());
+            return;
+        }
+
+        if (file_manager_.upload_file(session.home_dir, final_relative_path, file_data_vec, session.user_id)) {
+            sendSuccessResponse(response, "File '" + final_relative_path + "' (original: " + partHandler.originalFileName + ") uploaded successfully.", HTTPResponse::HTTP_CREATED);
+        } else {
+            sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "File upload failed on the server for path: " + final_relative_path);
+        }
+
+    
+    }
+    catch (const Poco::Exception& e) {
+        std::cerr << "[Server Upload] HTMLFormException: " << e.displayText() << std::endl;
+        // Lỗi "No boundary line found" hoặc các lỗi parse multipart khác sẽ được bắt ở đây
+        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Error parsing multipart form: " + e.displayText());
     } catch (const Poco::Exception& e) {
-    sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Error parsing multipart form: " + e.displayText());
-    return;
+        std::cerr << "[Server Upload] Poco::Exception during upload: " << e.displayText() << std::endl;
+        sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "Server error during upload processing: " + e.displayText());
+    } catch (const std::exception& e) {
+        std::cerr << "[Server Upload] std::exception during upload: " << e.what() << std::endl;
+        sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "Generic server error during upload: " + std::string(e.what()));
+    }
+
+
 }
-    
-    std::string final_relative_path = relative_path_from_header;
-    if (final_relative_path.empty()) {
-        final_relative_path = partHandler.relativePathFromField;
-    }
-
-    if (final_relative_path.empty() || Poco::Path(final_relative_path).isAbsolute() || final_relative_path.find("..") != std::string::npos) {
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid or missing relative path for upload.");
-        return;
-    }
-
-    if (partHandler.originalFileName.empty() || partHandler.originalFileName == "(unspecified)") {
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Missing 'file' part or filename in multipart form.");
-        return;
-    }
-    
-    std::string file_content_str = partHandler.pFileStream->str();
-    std::vector<char> file_data_vec(file_content_str.begin(), file_content_str.end());
-
-    // ACL Check và upload
-    fs::path target_abs_fs_path = fs::path(session.home_dir) / final_relative_path;
-    PermissionLevel perm = access_control_manager_.get_permission(session.user_id, target_abs_fs_path.parent_path());
-    if (perm < PermissionLevel::READ_WRITE) {
-        sendErrorResponse(response, HTTPResponse::HTTP_FORBIDDEN, "Permission denied to write to target location.");
-        return;
-    }
-
-    if (file_manager_.upload_file(session.home_dir, final_relative_path, file_data_vec, session.user_id)) {
-        sendSuccessResponse(response, "File '" + final_relative_path + "' uploaded.", HTTPResponse::HTTP_CREATED);
-    } else {
-        sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "File upload failed on server.");
-    }
-}
-
-
-
 
 
 void APIRouterHandler::handleFileDownload(HTTPServerRequest& request, HTTPServerResponse& response, const ActiveSession& session) {

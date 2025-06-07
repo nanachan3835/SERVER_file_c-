@@ -1,11 +1,18 @@
 #include "file_watcher.h"
-
+#define _DEFAULT_SOURCE
+#define _GNU_SOURCE 
 #include <dirent.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-
+#include <limits.h>
+#include <sys/inotify.h>
+#include <linux/limits.h>
+#include <unistd.h>
 static WatchNode *watch_list = NULL;
+#define DT_DIR 4 // Định nghĩa lại DT_DIR nếu không có trong hệ thống
+
+
 
 // Thêm watch vào danh sách và ghi nhớ wd và đường dẫn
 static void add_watch_entry(int wd, const char *path) {

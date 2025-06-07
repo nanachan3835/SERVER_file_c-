@@ -5,7 +5,7 @@
 #include "sync_manager.hpp"
 #include "access_control.hpp"
 #include "server.hpp"
-
+#include <filesystem> // Cho fs::current_path()
 #include <Poco/Net/ServerSocket.h>
 #include <Poco/Net/HTTPServer.h>
 #include <Poco/Net/HTTPServerParams.h>
@@ -16,6 +16,11 @@
 #include <iostream>
 #include <csignal>
 #include <memory>
+
+
+namespace fs = std::filesystem; 
+
+
 
 class FileServerApp : public Poco::Util::ServerApplication {
 public:
@@ -98,6 +103,11 @@ private:
 };
 
 int main(int argc, char** argv) {
+    try {
+        std::cout << "Server Current Working Directory: " << fs::current_path().string() << std::endl;
+    } catch (const fs::filesystem_error& e) {
+        std::cerr << "Error getting current working directory: " << e.what() << std::endl;
+    }
     FileServerApp app;
     return app.run(argc, argv);
 }

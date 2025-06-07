@@ -15,7 +15,7 @@
 #include <thread>
 #include <unistd.h>
 #include <unordered_map>
-
+#include<set>
 #ifdef DEBUG
 #define LOG(x) std::cout << x << std::endl
 #endif
@@ -33,6 +33,7 @@ class FileWatcherHelper {
         MOVED_FROM,
         CLOSED_WRITE,
         RENAME,
+        Q_OVERFLOW // inotify queue overflow
     };
     struct WatchEvent {
         InotifyEvent inotify_event;
@@ -42,7 +43,8 @@ class FileWatcherHelper {
     };
     using Callback = std::function<void(WatchEvent)>;
 
-    FileWatcherHelper(const std::string &watcherRootPath) : inotify_fd(inotify_init1(IN_NONBLOCK)) {
+    FileWatcherHelper(const std::string &watcherRootPath) {
+        inotify_fd = inotify_init1(IN_NONBLOCK);
         if (inotify_fd < 0) {
             auto errMsg = std::string("inotify_init failed: ") + strerror(errno) + "\n";
             std::cerr << errMsg;
@@ -58,17 +60,23 @@ class FileWatcherHelper {
         watching = false;
         if (watcher_thread.joinable()) {
             watcher_thread.join();
-        }
-        free_watch_list(inotify_fd);
+            free_watch_list(inotify_fd);
         close(inotify_fd);
+        }
     }
 
     FileWatcherHelper(FileWatcherHelper &&) = delete;
     FileWatcherHelper &operator=(FileWatcherHelper &&) = delete;
 
     void add_callback(Callback cb) { callbacks.push_back(std::move(cb)); }
+    void ignoreEventOnce(const std::string& relativePath) {
+        std::lock_guard<std::mutex> lock(ignored_paths_mutex_);
+        ignored_paths_once_.insert(relativePath);
+    }
 
   private:
+    std::set<std::string> ignored_paths_once_;
+    std::mutex ignored_paths_mutex_;
     struct PendingRenameEvent {
         std::chrono::steady_clock::time_point timestamp;
         std::string old_path;
@@ -105,12 +113,13 @@ class FileWatcherHelper {
     }
 
     void handle_event_create(inotify_event *event, const std::string &full_path) {
-        std::cout << "Created: " << full_path << std::endl;
-        notify_callbacks({InotifyEvent::CREATED, full_path});
         if (event->mask & IN_ISDIR) {
             // Nếu là taoj thư mục, thêm watch đệ quy
             add_watch_recursive(inotify_fd, full_path.c_str());
+            return;
         }
+        std::cout << "Created: " << full_path << std::endl;
+        notify_callbacks({InotifyEvent::CREATED, full_path});
     }
 
     void handle_event_moved_from(inotify_event *event, const std::string &full_path) {
