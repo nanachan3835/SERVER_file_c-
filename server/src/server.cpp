@@ -1,76 +1,67 @@
 #include "server.hpp"
-#include "config.hpp"    // For HTTP_SERVER_PORT, SERVER_BASE_URL, etc.
-#include "protocol.hpp"  // For JsonKeys, Endpoints, HttpHeaders, ContentTypes
-#include <filesystem>
+#include "config.hpp"
+#include "protocol.hpp"
+#include "sync_manager.hpp" // Để có SyncActionType enum
+
 #include <Poco/StreamCopier.h>
 #include <Poco/Path.h>
 #include <Poco/UUIDGenerator.h>
 #include <Poco/DateTimeFormatter.h>
 #include <Poco/DateTimeFormat.h>
-#include <Poco/NumberParser.h> // For parsing numbers from strings if needed
-#include <Poco/Net/PartSource.h> // <<< THÊM INCLUDE NÀY
-#include <Poco/Net/MessageHeader.h> // Để lấy tên file từ part header (tùy chọn)
-#include <fstream>   // For std::ifstream, std::ofstream
-#include <sstream>   // For std::ostringstream
-#include <iostream>  // For std::cout, std::cerr (debugging)
-#include <chrono>
+#include <Poco/Net/PartSource.h>
+#include <Poco/Net/PartHandler.h>
+#include <Poco/Net/MessageHeader.h>
+#include <Poco/Net/NameValueCollection.h>
+
+
+#include <fstream>
+#include <sstream>
+#include <iostream>
+#include <memory>
 
 
 
-namespace { // Anonymous namespace để giới hạn scope
+
+std::map<std::string, APIRouterHandler::ActiveSession> APIRouterHandler::active_sessions_;
+Poco::Mutex APIRouterHandler::session_mutex_;
+
+namespace {
     class NotFoundHandler : public Poco::Net::HTTPRequestHandler {
     public:
         void handleRequest(Poco::Net::HTTPServerRequest& req, Poco::Net::HTTPServerResponse& resp) override {
             resp.setStatus(Poco::Net::HTTPResponse::HTTP_NOT_FOUND);
-            resp.setContentType(ContentTypes::TEXT_PLAIN); // Giả sử ContentTypes::TEXT_PLAIN đã được định nghĩa
-            const char* msg = "Resource not found.";
-            resp.sendBuffer(msg, strlen(msg));
-        }
-    };
-} 
-
-
-
-
-
-
-
-
-
-
-// Initialize static members of APIRouterHandler
-std::map<std::string, APIRouterHandler::ActiveSession> APIRouterHandler::active_sessions_;
-Poco::Mutex APIRouterHandler::session_mutex_;
-
-// --- FileServerRequestHandlerFactory Implementation ---
-FileServerRequestHandlerFactory::FileServerRequestHandlerFactory(Database& db, UserManager& um, FileManager& fm, SyncManager& sm, AccessControlManager& acm)
-    : db_(db), user_manager_(um), file_manager_(fm), sync_manager_(sm), access_control_manager_(acm) {
-    std::cout << "FileServerRequestHandlerFactory created." << std::endl;
-    // Log the incoming request URI
-}
-
-
-
-HTTPRequestHandler* FileServerRequestHandlerFactory::createRequestHandler(const HTTPServerRequest& request) {
-    // std::cout << "Factory: Received request for URI: " << request.getURI() << std::endl;
-
-    // Route only API paths to APIRouterHandler
-    if (request.getURI().rfind(API_BASE_PATH, 0) == 0) { // starts_with
-        // std::cout << "Factory: Routing to APIRouterHandler for " << request.getURI() << std::endl;
-        return new APIRouterHandler(db_, user_manager_, file_manager_, sync_manager_, access_control_manager_);
-    }
-
-    // For any other path, return a simple 404 handler
-    // std::cout << "Factory: Path " << request.getURI() << " not API, returning NotFoundHandler." << std::endl;
-    return new class NotFoundHandler : public HTTPRequestHandler {
-        void handleRequest(HTTPServerRequest& req, HTTPServerResponse& resp) override {
-            resp.setStatus(HTTPResponse::HTTP_NOT_FOUND);
             resp.setContentType(ContentTypes::TEXT_PLAIN);
             const char* msg = "Resource not found.";
             resp.sendBuffer(msg, strlen(msg));
         }
     };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+FileServerRequestHandlerFactory::FileServerRequestHandlerFactory(Database& db, UserManager& um, FileManager& fm, SyncManager& sm, AccessControlManager& acm)
+    : db_(db), user_manager_(um), file_manager_(fm), sync_manager_(sm), access_control_manager_(acm) {}
+
+HTTPRequestHandler* FileServerRequestHandlerFactory::createRequestHandler(const HTTPServerRequest& request) {
+    if (request.getURI().rfind(API_BASE_PATH, 0) == 0) {
+        return new APIRouterHandler(db_, user_manager_, file_manager_, sync_manager_, access_control_manager_);
+    }
+    return new NotFoundHandler();
+}
+
+
+
+
+
 
 // --- APIRouterHandler Implementation ---
 APIRouterHandler::APIRouterHandler(Database& db, UserManager& um, FileManager& fm, SyncManager& sm, AccessControlManager& acm)
@@ -152,24 +143,22 @@ void APIRouterHandler::handleRequest(HTTPServerRequest& request, HTTPServerRespo
     }
 
     Poco::URI uri(request.getURI());
-    std::string endpointPath = uri.getPath(); // The path part of the URI
+    std::string endpointPath = uri.getPath();
     std::string method = request.getMethod();
 
     std::cout << Poco::DateTimeFormatter::format(Poco::Timestamp(), Poco::DateTimeFormat::ISO8601_FORMAT)
               << " Request: " << method << " " << endpointPath << " from " << request.clientAddress().toString() << std::endl;
 
     std::optional<ActiveSession> current_session_opt;
-
-    // Determine if authentication is needed for this endpoint
     bool needs_authentication = !(
-        (endpointPath == Endpoints::REGISTER && method == Poco::Net::HTTPRequest::HTTP_POST) ||
-        (endpointPath == Endpoints::LOGIN && method == Poco::Net::HTTPRequest::HTTP_POST)
-    );
+    (endpointPath == Endpoints::REGISTER && method == Poco::Net::HTTPRequest::HTTP_POST) || // SỬA Ở ĐÂY
+    (endpointPath == Endpoints::LOGIN && method == Poco::Net::HTTPRequest::HTTP_POST)    // SỬA Ở ĐÂY
+);
 
     if (needs_authentication) {
         current_session_opt = getAuthenticatedSession(request);
         if (!current_session_opt) {
-            sendErrorResponse(response, HTTPResponse::HTTP_UNAUTHORIZED, "Authentication required or token invalid/expired.");
+            sendErrorResponse(response, HTTPResponse::HTTP_UNAUTHORIZED, "Auth required.");
             return;
         }
     }
@@ -238,16 +227,9 @@ void APIRouterHandler::handleRequest(HTTPServerRequest& request, HTTPServerRespo
 void APIRouterHandler::handleUserRegister(HTTPServerRequest& request, HTTPServerResponse& response) {
         json req_payload;
     try {
-        // request.stream() sẽ được đọc bởi json::parse.
-        // Nếu stream rỗng, json::parse sẽ throw lỗi.
-        req_payload = json::parse(request.stream());
-    } catch (const json::parse_error& e) { // Bắt cụ thể parse_error
-        std::string error_msg = "Invalid JSON for register: " + std::string(e.what()) +
-                                " at byte " + std::to_string(e.byte);
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, error_msg);
-        return;
-    } catch (const json::exception& e) { // Bắt các json exception khác (ít xảy ra hơn khi parse)
-         sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "JSON error: " + std::string(e.what()));
+        req_payload = json::parse(request.stream()); // Parse stream trực tiếp
+    } catch (const json::parse_error& e) {
+        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid JSON for register: " + std::string(e.what()) + " at byte " + std::to_string(e.byte));
         return;
     }
 
@@ -277,18 +259,11 @@ void APIRouterHandler::handleUserRegister(HTTPServerRequest& request, HTTPServer
 }
 
 void APIRouterHandler::handleUserLogin(HTTPServerRequest& request, HTTPServerResponse& response) {
-        json req_payload;
+         json req_payload;
     try {
-        // request.stream() sẽ được đọc bởi json::parse.
-        // Nếu stream rỗng, json::parse sẽ throw lỗi.
         req_payload = json::parse(request.stream());
-    } catch (const json::parse_error& e) { // Bắt cụ thể parse_error
-        std::string error_msg = "Invalid JSON for register: " + std::string(e.what()) +
-                                " at byte " + std::to_string(e.byte);
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, error_msg);
-        return;
-    } catch (const json::exception& e) { // Bắt các json exception khác (ít xảy ra hơn khi parse)
-         sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "JSON error: " + std::string(e.what()));
+    } catch (const json::parse_error& e) {
+        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid JSON for login: " + std::string(e.what()) + " at byte " + std::to_string(e.byte));
         return;
     }
     std::string username = req_payload.value(JsonKeys::USERNAME, "");
@@ -359,85 +334,88 @@ void APIRouterHandler::handleUserMe(HTTPServerRequest& request, HTTPServerRespon
 // File & Directory Handlers
 void APIRouterHandler::handleFileUpload(HTTPServerRequest& request, HTTPServerResponse& response, const ActiveSession& session) {
     if (request.getContentType().rfind("multipart/form-data", 0) != 0) {
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Content-Type must be multipart/form-data for file uploads.");
+        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Content-Type must be multipart/form-data.");
         return;
     }
 
-    HTMLForm form(request, request.stream()); // Parses multipart/form-data
-    std::string relative_path;
+    std::string relative_path_from_header = request.get(HttpHeaders::FILE_RELATIVE_PATH, "");
 
-    if (request.has(HttpHeaders::FILE_RELATIVE_PATH)) {
-        relative_path = request.get(HttpHeaders::FILE_RELATIVE_PATH);
-    } else if (form.has("relativePath")) {
-        relative_path = form.get("relativePath");
-    } else {
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Missing relative path (X-File-Relative-Path header or 'relativePath' form field).");
-        return;
-    }
-    Poco::Path p_relative(relative_path);
-    if (relative_path.empty() || p_relative.isAbsolute() || relative_path.find("..") != std::string::npos) {
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid relative path specified.");
-        return;
-    }
+    class FileUploadPartHandler : public Poco::Net::PartHandler {
+    public:
+        std::string relativePathFromField;
+        std::string originalFileName;
+        std::string contentType;
+        std::unique_ptr<std::ostringstream> pFileStream;
 
-    Poco::Net::PartSource* part_source = nullptr;
-    std::string original_filename;
+        FileUploadPartHandler() : pFileStream(std::make_unique<std::ostringstream>()) {}
 
-    
-    for (HTMLForm::ConstIterator it = form.begin(); it != form.end(); ++it) {
-    if (it->second.isFile()) { // Kiểm tra xem part có phải là file không
-        // Giả sử chỉ có một file được upload hoặc lấy file đầu tiên
-        // Hoặc bạn có thể kiểm tra it->first (tên của form field) nếu client gửi tên cụ thể
-        if (it->first == "file") { // Kiểm tra tên field là "file"
-             try {
-                part_source = dynamic_cast<Poco::Net::PartSource*>(form.getPartSource(it->first)); // Dùng getPartSource
-                if (part_source) {
-                    original_filename = it->second.getFileName(); // Lấy tên file gốc từ Part
-                    break; // Tìm thấy file rồi, thoát vòng lặp
-                }
-            } catch (const Poco::NotFoundException&) {
-                // Bỏ qua nếu part không phải là PartSource, hoặc getPartSource thất bại
-            } catch (const std::bad_cast&) {
-                // Bỏ qua nếu dynamic_cast thất bại
-                    }
-                }
+        void handlePart(const Poco::Net::MessageHeader& header, std::istream& stream) override {
+            Poco::Net::NameValueCollection params;
+            std::string disposition = header.get("Content-Disposition", "");
+            if (!disposition.empty()) {
+                std::string disposition_value_placeholder; // Cần một string để nhận giá trị chính của header (phần trước dấu ;)
+                Poco::Net::MessageHeader::splitParameters(disposition, disposition_value_placeholder, params);
+            }
+
+            std::string fieldName = params.get("name", "");
+            if (fieldName == "relativePath") {
+                Poco::StreamCopier::copyToString(stream, relativePathFromField);
+            } else if (fieldName == "file") {
+                originalFileName = params.get("filename", "(unspecified)");
+                contentType = header.get("Content-Type", "(unspecified)");
+                Poco::StreamCopier::copyStream(stream, *pFileStream);
             }
         }
+    };
 
-
-    if (!part_source) {
-    sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Missing 'file' part in the multipart form or it's not a file part.");
+    FileUploadPartHandler partHandler;
+    //HTMLForm form_processor(partHandler); // Chỉ định PartHandler
+    Poco::Net::HTMLForm form_processor(request, request.stream(), partHandler);
+    // Poco::Net::HTMLForm form_processor(request.getContentType(), partHandler); // Cần contentType
+    try {
+    // load sẽ đọc stream và gọi PartHandler
+    form_processor.load(request, request.stream());
+    } catch (const Poco::Exception& e) {
+    sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Error parsing multipart form: " + e.displayText());
     return;
+}
+    
+    std::string final_relative_path = relative_path_from_header;
+    if (final_relative_path.empty()) {
+        final_relative_path = partHandler.relativePathFromField;
     }
 
-
-    std::cout << "Uploading file: " << original_filename << " to " << relative_path << std::endl;
-
-    std::istream& file_stream = part_source->stream(); // Bây giờ nên OK vì đã include PartSource.h
-    std::vector<char> file_data((std::istreambuf_iterator<char>(file_stream)), std::istreambuf_iterator<char>());
-
-
-
-
-    
-    // Construct absolute path and check permissions
-    fs::path target_abs_fs_path = fs::path(session.home_dir) / relative_path;
-    // For upload, check write permission on the parent directory
-    PermissionLevel perm = access_control_manager_.get_permission(session.user_id, target_abs_fs_path.parent_path());
-    if (perm < PermissionLevel::READ_WRITE) {
-        sendErrorResponse(response, HTTPResponse::HTTP_FORBIDDEN, "Permission denied to write to the target location: " + target_abs_fs_path.parent_path().string());
+    if (final_relative_path.empty() || Poco::Path(final_relative_path).isAbsolute() || final_relative_path.find("..") != std::string::npos) {
+        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid or missing relative path for upload.");
         return;
     }
 
-    std::istream& file_stream = part_source->stream();
-    std::vector<char> file_data((std::istreambuf_iterator<char>(file_stream)), std::istreambuf_iterator<char>());
+    if (partHandler.originalFileName.empty() || partHandler.originalFileName == "(unspecified)") {
+        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Missing 'file' part or filename in multipart form.");
+        return;
+    }
+    
+    std::string file_content_str = partHandler.pFileStream->str();
+    std::vector<char> file_data_vec(file_content_str.begin(), file_content_str.end());
 
-    if (file_manager_.upload_file(session.home_dir, relative_path, file_data, session.user_id)) {
-        sendSuccessResponse(response, "File '" + relative_path + "' uploaded successfully.", HTTPResponse::HTTP_CREATED);
+    // ACL Check và upload
+    fs::path target_abs_fs_path = fs::path(session.home_dir) / final_relative_path;
+    PermissionLevel perm = access_control_manager_.get_permission(session.user_id, target_abs_fs_path.parent_path());
+    if (perm < PermissionLevel::READ_WRITE) {
+        sendErrorResponse(response, HTTPResponse::HTTP_FORBIDDEN, "Permission denied to write to target location.");
+        return;
+    }
+
+    if (file_manager_.upload_file(session.home_dir, final_relative_path, file_data_vec, session.user_id)) {
+        sendSuccessResponse(response, "File '" + final_relative_path + "' uploaded.", HTTPResponse::HTTP_CREATED);
     } else {
-        sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "File upload failed on the server.");
+        sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "File upload failed on server.");
     }
 }
+
+
+
+
 
 void APIRouterHandler::handleFileDownload(HTTPServerRequest& request, HTTPServerResponse& response, const ActiveSession& session) {
     Poco::URI uri(request.getURI());
@@ -475,6 +453,11 @@ void APIRouterHandler::handleFileDownload(HTTPServerRequest& request, HTTPServer
         sendErrorResponse(response, HTTPResponse::HTTP_NOT_FOUND, "File not found or download failed.");
     }
 }
+
+
+
+
+
 
 void APIRouterHandler::handleFileList(HTTPServerRequest& request, HTTPServerResponse& response, const ActiveSession& session) {
     Poco::URI uri(request.getURI());
@@ -659,43 +642,11 @@ void APIRouterHandler::handleFileRename(HTTPServerRequest& request, HTTPServerRe
 
 // Sync Handler
 void APIRouterHandler::handleSyncManifest(HTTPServerRequest& request, HTTPServerResponse& response, const ActiveSession& session) {
-    
-    
-
-    std::vector<SyncOperation> sync_ops = sync_manager_.determine_sync_actions(session.user_id, server_sync_root, client_files_info);
-
-    json ops_json_array = json::array();
-    for (const auto& op : sync_ops) {
-        // Tự chuyển đổi ở đây thay vì dựa vào ProtocolSyncActionTypes::ToString
-        std::string action_str;
-        switch (op.action) {
-            case SyncActionType::NO_ACTION: action_str = "NO_ACTION"; break;
-            case SyncActionType::UPLOAD_TO_SERVER: action_str = "UPLOAD_TO_SERVER"; break;
-            case SyncActionType::DOWNLOAD_TO_CLIENT: action_str = "DOWNLOAD_TO_CLIENT"; break;
-            case SyncActionType::CONFLICT_SERVER_WINS: action_str = "CONFLICT_SERVER_WINS"; break;
-            // ... các case khác ...
-            default: action_str = "UNKNOWN_SYNC_ACTION";
-        }
-        // Tạo JSON object cho mỗi operation
-        json op_json_obj;
-        op_json_obj[JsonKeys::SYNC_ACTION_TYPE] = action_str;
-        op_json_obj[JsonKeys::RELATIVE_PATH] = op.relative_path;
-        ops_json_array.push_back(op_json_obj); // Push back object, không phải initializer list
-    }
-
-
     json req_payload;
     try {
-        // request.stream() sẽ được đọc bởi json::parse.
-        // Nếu stream rỗng, json::parse sẽ throw lỗi.
         req_payload = json::parse(request.stream());
-    } catch (const json::parse_error& e) { // Bắt cụ thể parse_error
-        std::string error_msg = "Invalid JSON for register: " + std::string(e.what()) +
-                                " at byte " + std::to_string(e.byte);
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, error_msg);
-        return;
-    } catch (const json::exception& e) { // Bắt các json exception khác (ít xảy ra hơn khi parse)
-         sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "JSON error: " + std::string(e.what()));
+    } catch (const json::parse_error& e) {
+        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid JSON for sync: " + std::string(e.what()) + " at byte " + std::to_string(e.byte));
         return;
     }
 
@@ -704,32 +655,50 @@ void APIRouterHandler::handleSyncManifest(HTTPServerRequest& request, HTTPServer
         return;
     }
 
-    std::vector<ClientSyncFileInfo> client_files_info;
+    std::vector<ClientSyncFileInfo> client_files_info_list; // KHAI BÁO ĐÚNG
     for (const auto& cf_json : req_payload[JsonKeys::CLIENT_FILES]) {
         ClientSyncFileInfo cfi;
-        cfi.relative_path = cf_json.value(JsonKeys::RELATIVE_PATH, ""); // Make sure this key matches protocol.hpp
+        cfi.relative_path = cf_json.value(JsonKeys::RELATIVE_PATH, "");
         cfi.last_modified = Poco::Timestamp::fromEpochTime(cf_json.value(JsonKeys::LAST_MODIFIED, (long long)0));
         cfi.checksum = cf_json.value(JsonKeys::CHECKSUM, "");
-        if (!cfi.relative_path.empty()) { // Basic validation
-            client_files_info.push_back(cfi);
+        if (!cfi.relative_path.empty()) {
+            client_files_info_list.push_back(cfi);
         }
     }
+    
+    Poco::Path server_sync_root_path(session.home_dir); // KHAI BÁO ĐÚNG
 
-    Poco::Path server_sync_root(session.home_dir); // Syncing user's home directory
-    // TODO: If syncing a shared folder, server_sync_root would be different and require ACL check.
+    PermissionLevel perm = access_control_manager_.get_permission(session.user_id, fs::path(session.home_dir));
+    if (perm < PermissionLevel::READ_WRITE) {
+         sendErrorResponse(response, HTTPResponse::HTTP_FORBIDDEN, "Permission denied for sync on home dir.");
+        return;
+    }
 
-    std::vector<SyncOperation> sync_ops = sync_manager_.determine_sync_actions(session.user_id, server_sync_root, client_files_info);
 
-    json ops_json_array = json::array();
-    for (const auto& op : sync_ops) {
-        ops_json_array.push_back({
-            {JsonKeys::SYNC_ACTION_TYPE, ProtocolSyncActionTypes::ToString(op.action)},
-            {JsonKeys::RELATIVE_PATH, op.relative_path}
-        });
+
+    std::vector<SyncOperation> sync_ops_result = sync_manager_.determine_sync_actions(session.user_id, server_sync_root_path, client_files_info_list);
+
+    json ops_json_array_resp = json::array();
+    for (const auto& op : sync_ops_result) {
+        json op_json_obj;
+        std::string action_str;
+        switch (op.action) { // Dùng SyncActionType từ sync_manager.hpp
+            case SyncActionType::NO_ACTION: action_str = "NO_ACTION"; break;
+            case SyncActionType::UPLOAD_TO_SERVER: action_str = "UPLOAD_TO_SERVER"; break;
+            case SyncActionType::DOWNLOAD_TO_CLIENT: action_str = "DOWNLOAD_TO_CLIENT"; break;
+            case SyncActionType::CONFLICT_SERVER_WINS: action_str = "CONFLICT_SERVER_WINS"; break;
+            // ... các case khác ...
+            default: action_str = "UNKNOWN_SYNC_ACTION";
+        }
+
+        // Tạo JSON object cho mỗi operation
+        op_json_obj[JsonKeys::SYNC_ACTION_TYPE] = action_str;
+        op_json_obj[JsonKeys::RELATIVE_PATH] = op.relative_path;
+        ops_json_array_resp.push_back(op_json_obj);
     }
     json res_payload;
     res_payload[JsonKeys::STATUS] = "success";
-    res_payload[JsonKeys::SYNC_OPERATIONS] = ops_json_array;
+    res_payload[JsonKeys::SYNC_OPERATIONS] = ops_json_array_resp;
     sendJsonResponse(response, HTTPResponse::HTTP_OK, res_payload);
 }
 
@@ -773,33 +742,29 @@ void APIRouterHandler::handleCreateSharedStorage(HTTPServerRequest& request, HTT
 
 void APIRouterHandler::handleGrantSharedAccess(HTTPServerRequest& request, HTTPServerResponse& response, const ActiveSession& session) {
         json req_payload;
-    try {
-        // request.stream() sẽ được đọc bởi json::parse.
-        // Nếu stream rỗng, json::parse sẽ throw lỗi.
+     try {
         req_payload = json::parse(request.stream());
-    } catch (const json::parse_error& e) { // Bắt cụ thể parse_error
-        std::string error_msg = "Invalid JSON for register: " + std::string(e.what()) +
-                                " at byte " + std::to_string(e.byte);
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, error_msg);
-        return;
-    } catch (const json::exception& e) { // Bắt các json exception khác (ít xảy ra hơn khi parse)
-         sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "JSON error: " + std::string(e.what()));
+    } catch (const json::parse_error& e) {
+        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid JSON for grant access: " + std::string(e.what()) + " at byte " + std::to_string(e.byte));
         return;
     }
-
     std::string storage_name = req_payload.value(JsonKeys::STORAGE_NAME, "");
     std::string target_username = req_payload.value(JsonKeys::TARGET_USER, "");
-    std::string perm_str = req_payload.value(JsonKeys::PERMISSION, ""); // "r" or "rw"
+    std::string perm_str = req_payload.value(JsonKeys::PERMISSION, "");
 
     if (storage_name.empty() || target_username.empty() || perm_str.empty()) {
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Missing 'storage_name', 'target_user', or 'permission'.");
+        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Missing fields for grant access.");
         return;
     }
-    PermissionLevel perm_to_grant = access_control_manager_.string_to_permission_level(perm_str); // Ensure this method is public in ACM or use a helper
-    if (perm_to_grant == PermissionLevel::NONE && perm_str != "none") {
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid permission string. Use 'r', 'rw', or 'none'.");
+    // SỬA LỖI: Gọi hàm public từ AccessControlManager
+    PermissionLevel perm_to_grant = access_control_manager_.string_to_permission_level(perm_str);
+    if (perm_to_grant == PermissionLevel::NONE && perm_str != "none") { // "none" có thể là một cách để revoke
+        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid permission string.");
         return;
     }
+
+
+    
     if (target_username == session.username && perm_to_grant == PermissionLevel::NONE) {
         sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Cannot revoke your own access to a shared storage this way. Owner access is special.");
         return;

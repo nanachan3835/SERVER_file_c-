@@ -5,62 +5,46 @@
 #include <openssl/sha.h> // For checksums later
 #include <iomanip>
 #include <sstream>
+#include <filesystem> // Đảm bảo include
+#include <chrono>  
+namespace fs = std::filesystem;
+
+
 
 FileManager::FileManager(Database& db) : db_(db) {}
 
 // Helper to ensure user_path is within base_path and doesn't use ".." to escape.
 // Returns the canonical absolute path if safe, otherwise an empty path.
 fs::path FileManager::resolve_safe_path(const fs::path& base_path, const std::string& relative_user_path_str) {
-    fs::path relative_user_path(relative_user_path_str); // Chuyển string sang path
-
-    // Ngăn chặn ".." trong đường dẫn tương đối ngay từ đầu
+    fs::path relative_user_path(relative_user_path_str);
     for (const auto& part : relative_user_path) {
         if (part == "..") {
-            std::cerr << "Path traversal attempt detected in relative path: " << relative_user_path_str << std::endl;
-            return {}; // Trả về đường dẫn rỗng nếu không hợp lệ
-        }
-    }
-
-    fs::path full_path = base_path / relative_user_path;
-    fs::path canonical_full_path;
-    fs::path canonical_base_path;
-
-    try {
-        // weakly_canonical cố gắng chuẩn hóa đường dẫn ngay cả khi một số phần không tồn tại.
-        // Tuy nhiên, để an toàn hơn, chúng ta nên đảm bảo base_path tồn tại.
-        if (!fs::exists(base_path) || !fs::is_directory(base_path)) {
-             std::cerr << "Base path does not exist or is not a directory: " << base_path << std::endl;
+            std::cerr << "Path traversal attempt detected: " << relative_user_path_str << std::endl;
             return {};
         }
-        canonical_base_path = fs::weakly_canonical(base_path); // Hoặc fs::canonical nếu base_path chắc chắn tồn tại
-        
-        // For full_path, weakly_canonical is appropriate as the final component might not exist yet (e.g., for upload/mkdir)
+    }
+    fs::path full_path = base_path / relative_user_path;
+    fs::path canonical_full_path, canonical_base_path;
+    try {
+        if (!fs::exists(base_path) || !fs::is_directory(base_path)) { return {}; }
+        canonical_base_path = fs::weakly_canonical(base_path);
         canonical_full_path = fs::weakly_canonical(full_path);
-
     } catch (const fs::filesystem_error& e) {
-        std::cerr << "Filesystem error during path canonicalization (" << full_path << "): " << e.what() << std::endl;
+        std::cerr << "Path canonicalization error (" << full_path << "): " << e.what() << std::endl;
         return {};
     }
-
-    // Kiểm tra xem đường dẫn đã chuẩn hóa có thực sự nằm trong base_path đã chuẩn hóa không
     std::string full_str = canonical_full_path.string();
     std::string base_str = canonical_base_path.string();
-
-    if (full_str.rfind(base_str, 0) == 0) { // starts_with
-        // Thêm một kiểm tra nữa để đảm bảo nó không chỉ là prefix mà còn là một sub-directory thực sự
-        // Ví dụ: base = /data/user, path = /data/username (không được phép)
-        //         base = /data/user, path = /data/user/docs (OK)
-        //         base = /data/user, path = /data/user (OK - là chính nó)
-        if (full_str.length() == base_str.length() || 
-            (full_str.length() > base_str.length() && full_str[base_str.length()] == fs::path::preferred_separator) ) {
+    if (full_str.rfind(base_str, 0) == 0) {
+        if (full_str.length() == base_str.length() || (full_str.length() > base_str.length() && full_str[base_str.length()] == fs::path::preferred_separator)) {
             return canonical_full_path;
         }
     }
-    
-    std::cerr << "Path " << full_path << " (canonical: " << canonical_full_path 
-              << ") is outside of base " << base_path << " (canonical: " << canonical_base_path << ")" << std::endl;
+    std::cerr << "Path " << full_path << " is outside base " << base_path << std::endl;
     return {};
 }
+
+
 
 
 bool FileManager::upload_file(const fs::path& server_base_path, const std::string& relative_path_str, const std::vector<char>& data, int user_id) {
@@ -187,14 +171,13 @@ bool FileManager::create_directory(const fs::path& server_base_path, const std::
 
 std::vector<FileInfo> FileManager::list_directory(const fs::path& server_base_path, const std::string& relative_path_str, int user_id) {
     std::vector<FileInfo> result;
-    fs::path relative_path(relative_path_str);
-    fs::path full_server_path = resolve_safe_path(server_base_path, relative_path);
+    fs::path full_server_path = resolve_safe_path(server_base_path, relative_path_str);
 
     if (full_server_path.empty() || !fs::exists(full_server_path) || !fs::is_directory(full_server_path)) {
         std::cerr << "List Directory: Path not found, not a directory, or unsafe: " << full_server_path << std::endl;
         return result;
     }
-    
+
     try {
         for (const auto& entry : fs::directory_iterator(full_server_path)) {
             FileInfo info;
@@ -203,35 +186,20 @@ std::vector<FileInfo> FileManager::list_directory(const fs::path& server_base_pa
             info.path = entry_relative_path.lexically_normal().string();
             info.is_directory = entry.is_directory();
             if (!info.is_directory) {
-                info.size = entry.file_size();
+                 try { info.size = entry.file_size(); } catch(const fs::filesystem_error&){ info.size = 0;}
             } else {
-            info.size = 0;
-    }
-            
+                info.size = 0;
+            }
+
             auto ftime = fs::last_write_time(entry.path());
-            // The following conversion is C++20. For C++17, it's more complex.
-            // Using chrono::file_clock::to_sys converts file_time to system_time.
-            // Then convert system_time to time_t.
-            // This line requires C++20 and <chrono>
-            // info.last_modified = std::chrono::system_clock::to_time_t(std::chrono::utc_clock::to_sys(ftime)); // C++20 file_clock to system_clock to time_t
-            
-            // This is a common way but relies on file_time_type's epoch matching system_clock's epoch
-            // Simpler C++17 compatible (might be less precise or portable with epoch)
-            //info.last_modified = decltype(ftime)::clock::to_time_t(ftime);
-            //auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-            //        ftime - std::filesystem::file_clock::now() + std::chrono::system_clock::now()
-            //    );
-            //info.last_modified = std::chrono::system_clock::to_time_t(sctp);
-            #if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L && defined(__cpp_lib_filesystem) && __cpp_lib_filesystem >= 201703L && !defined(__APPLE__) // C++20 way (except on older Apple Clang)
-    // This is the C++20 standard way if available and not problematic
-                    info.last_modified = std::chrono::system_clock::to_time_t(std::chrono::utc_clock::to_sys(std::chrono::file_clock::to_utc(ftime))));
-            #else // Fallback for C++17 or compilers with less complete C++20 chrono/fs
-    // This relies on the epoch of file_clock being convertible or relatable to system_clock's epoch.
-    // It's a common approach but less standardly guaranteed than the C++20 one.
-                    auto system_time_point = std::chrono::system_clock::now() + (ftime - fs::file_clock::now());
-                    info.last_modified = std::chrono::system_clock::to_time_t(system_time_point);
-            #endif
-            // TODO: Get checksum from metadata if available
+            // SỬA LỖI CHUYỂN ĐỔI THỜI GIAN
+            std::chrono::time_point<std::chrono::system_clock> sctp(
+                std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                    ftime.time_since_epoch()
+                )
+            );
+            info.last_modified = std::chrono::system_clock::to_time_t(sctp);
+
             result.push_back(info);
         }
     } catch (const fs::filesystem_error& e) {
@@ -241,21 +209,16 @@ std::vector<FileInfo> FileManager::list_directory(const fs::path& server_base_pa
 }
 
 
+
 std::string FileManager::calculate_checksum(const fs::path& file_path_obj) {
-    // This was a placeholder before, let's make it use SHA256
-    fs::path file_path = fs::weakly_canonical(file_path_obj); // Ensure path is good
-
+    // Giữ nguyên code SHA256 cũ (sẽ có warning) hoặc thay bằng EVP
+    fs::path file_path = fs::weakly_canonical(file_path_obj);
     std::ifstream file(file_path, std::ios::binary);
-    if (!file.is_open()) {
-        std::cerr << "Checksum: Cannot open file: " << file_path << std::endl;
-        return ""; // Or throw
-    }
-
+    if (!file.is_open()) { return ""; }
     unsigned char hash_digest[SHA256_DIGEST_LENGTH];
     SHA256_CTX sha256_ctx;
     SHA256_Init(&sha256_ctx);
-
-    char buffer[8192]; // Read in chunks
+    char buffer[8192];
     while (file.good()) {
         file.read(buffer, sizeof(buffer));
         std::streamsize bytes_read = file.gcount();
@@ -265,7 +228,6 @@ std::string FileManager::calculate_checksum(const fs::path& file_path_obj) {
     }
     file.close();
     SHA256_Final(hash_digest, &sha256_ctx);
-
     std::ostringstream ss;
     ss << std::hex << std::setfill('0');
     for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
@@ -275,62 +237,49 @@ std::string FileManager::calculate_checksum(const fs::path& file_path_obj) {
 }
 
 
-
-
-
 void FileManager::update_file_metadata(const fs::path& full_server_path_obj, int user_id) {
     if (!fs::exists(full_server_path_obj) || fs::is_directory(full_server_path_obj)) {
-        // For directories, you might want different metadata or skip checksum
-        return; 
+        if (fs::is_directory(full_server_path_obj)) return;
     }
-
-    std::string full_server_path = fs::weakly_canonical(full_server_path_obj).string();
+    std::string full_server_path_str = fs::weakly_canonical(full_server_path_obj).string();
     std::string checksum = calculate_checksum(full_server_path_obj);
-
-
-
     auto ftime = fs::last_write_time(full_server_path_obj);
+    // SỬA LỖI CHUYỂN ĐỔI THỜI GIAN
+    std::chrono::time_point<std::chrono::system_clock> sctp(
+    std::chrono::duration_cast<std::chrono::system_clock::duration>(
+            ftime.time_since_epoch()
+        )
+    );
 
-    //time_t last_modified = decltype(ftime)::clock::to_time_t(ftime);
-    //auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-    //            ftime - std::filesystem::file_clock::now() + std::chrono::system_clock::now()
-    //        );
-    //time_t last_modified = std::chrono::system_clock::to_time_t(sctp);
-    #if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L && defined(__cpp_lib_filesystem) && __cpp_lib_filesystem >= 201703L && !defined(__APPLE__)
-        time_t last_modified = std::chrono::system_clock::to_time_t(std::chrono::utc_clock::to_sys(std::chrono::file_clock::to_utc(ftime))));
-    #else
-        auto system_time_point = std::chrono::system_clock::now() + (ftime - fs::file_clock::now());
-        time_t last_modified = std::chrono::system_clock::to_time_t(system_time_point);
-    #endif
 
+    time_t last_modified = std::chrono::system_clock::to_time_t(sctp);
+    // #if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L && defined(__cpp_lib_filesystem) && __cpp_lib_filesystem >= 201703L && !defined(__APPLE__)
+    //     time_t last_modified = std::chrono::system_clock::to_time_t(std::chrono::utc_clock::to_sys(std::chrono::file_clock::to_utc(ftime))));
+    // #else
+    //     auto system_time_point_list = std::chrono::system_clock::now() + (ftime - decltype(ftime)::clock::now());
+    //     time_t last_modified = std::chrono::system_clock::to_time_t(system_time_point_list);
+    // #endif
     sqlite3_stmt* stmt;
-    // UPSERT: Update if path exists, otherwise insert.
     std::string sql = R"(
-        INSERT INTO file_metadata (file_path, checksum, last_modified, owner_user_id) 
-        VALUES (?, ?, ?, ?)
+        INSERT INTO file_metadata (file_path, checksum, last_modified, owner_user_id, version)
+        VALUES (?, ?, ?, ?, 1)
         ON CONFLICT(file_path) DO UPDATE SET
         checksum = excluded.checksum,
         last_modified = excluded.last_modified,
-        owner_user_id = excluded.owner_user_id,
+        owner_user_id = COALESCE(excluded.owner_user_id, owner_user_id),
         version = version + 1;
     )";
 
     if (sqlite3_prepare_v2(db_.get_db_handle(), sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, full_server_path.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 1, full_server_path_str.c_str(), -1, SQLITE_STATIC);
         sqlite3_bind_text(stmt, 2, checksum.c_str(), -1, SQLITE_STATIC);
         sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(last_modified));
-        if (user_id != -1) {
-            sqlite3_bind_int(stmt, 4, user_id);
-        } else {
-            sqlite3_bind_null(stmt, 4);
-        }
-
-        if (sqlite3_step(stmt) != SQLITE_DONE) {
-            std::cerr << "Failed to update/insert metadata for " << full_server_path << ": " << sqlite3_errmsg(db_.get_db_handle()) << std::endl;
-        }
+        if (user_id != -1) { sqlite3_bind_int(stmt, 4, user_id); }
+        else { sqlite3_bind_null(stmt, 4); }
+        if (sqlite3_step(stmt) != SQLITE_DONE) { /* log error */ }
         sqlite3_finalize(stmt);
     } else {
-        std::cerr << "Failed to prepare metadata statement for " << full_server_path << ": " << sqlite3_errmsg(db_.get_db_handle()) << std::endl;
+        std::cerr << "Failed to prepare metadata statement for " << full_server_path_str << ": " << sqlite3_errmsg(db_.get_db_handle()) << std::endl;
     }
 }
 
