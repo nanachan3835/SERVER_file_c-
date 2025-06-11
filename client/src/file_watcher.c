@@ -10,7 +10,7 @@
 #include <linux/limits.h>
 #include <unistd.h>
 static WatchNode *watch_list = NULL;
-#define DT_DIR 4 // Định nghĩa lại DT_DIR nếu không có trong hệ thống
+#define DT_DIR 4 
 
 
 
