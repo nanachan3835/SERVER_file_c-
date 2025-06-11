@@ -50,12 +50,29 @@ public:
     HTTPRequestHandler* createRequestHandler(const HTTPServerRequest& request) override;
 
 private:
+    //void setupRoutes();
+    // struct ActiveSession {
+    //     int user_id;
+    //     std::string username;
+    //     std::string home_dir;       // Absolute path to user's home directory
+    //     Poco::Timestamp last_activity;
+    //     // Potentially other session data: Poco::UUID session_id_uuid;
+    // };
     // References to shared manager instances
     Database& db_;
     UserManager& user_manager_;
     FileManager& file_manager_;
     SyncManager& sync_manager_;
     AccessControlManager& access_control_manager_;
+    // Định nghĩa kiểu cho các hàm handler
+    //using PublicHandler = std::function<void(HTTPServerRequest&, HTTPServerResponse&)>;
+    //using AuthHandler = std::function<void(HTTPServerRequest&, HTTPServerResponse&, const ActiveSession&)>;
+
+    // Map để lưu các route
+    // std::map<std::string, PublicHandler> public_routes_;
+    // std::map<std::string, AuthHandler> authenticated_routes_;
+
+    // Hàm helper để đăng ký các route
 };
 
 
@@ -66,14 +83,6 @@ public:
     void handleRequest(HTTPServerRequest& request, HTTPServerResponse& response) override;
 
 private:
-    // References to shared manager instances
-    Database& db_;
-    UserManager& user_manager_;
-    FileManager& file_manager_;
-    SyncManager& sync_manager_;
-    AccessControlManager& access_control_manager_;
-
-    // --- Active Session Structure (Simplified for local server) ---
     struct ActiveSession {
         int user_id;
         std::string username;
@@ -82,12 +91,30 @@ private:
         // Potentially other session data: Poco::UUID session_id_uuid;
     };
 
+    using PublicHandler = std::function<void(HTTPServerRequest&, HTTPServerResponse&)>;
+    using AuthHandler = std::function<void(HTTPServerRequest&, HTTPServerResponse&, const ActiveSession&)>;
+
+
+
+
+
+    // References to shared manager instances
+    Database& db_;
+    UserManager& user_manager_;
+    FileManager& file_manager_;
+    SyncManager& sync_manager_;
+    AccessControlManager& access_control_manager_;
+
+    // --- Active Session Structure (Simplified for local server) ---
+    std::map<std::string, PublicHandler> public_routes_;
+    std::map<std::string, AuthHandler> authenticated_routes_;
+
     // Static map for active sessions.
     // WARNING: For a local, single-process server. NOT suitable for production/multi-process.
     // Needs protection for concurrent access from multiple handler threads.
     static std::map<std::string, ActiveSession> active_sessions_;
     static Poco::Mutex session_mutex_; // Mutex to protect active_sessions_
-
+    void setupRoutes();
     // --- Request Handling Helper Methods ---
     // User Management
     void handleUserRegister(HTTPServerRequest& request, HTTPServerResponse& response);

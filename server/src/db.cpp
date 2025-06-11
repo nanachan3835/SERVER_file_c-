@@ -139,15 +139,21 @@ bool Database::initialize_schema() {
     std::string file_metadata_table_sql = R"(
         CREATE TABLE IF NOT EXISTS file_metadata (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_path TEXT UNIQUE NOT NULL, -- Full path within the server's data directory
+            file_path TEXT UNIQUE NOT NULL, 
             checksum TEXT,
-            last_modified INTEGER, -- Unix timestamp
+            last_modified INTEGER, 
             version INTEGER DEFAULT 1,
-            owner_user_id INTEGER, -- Optional, can be NULL for shared files not directly owned
+            owner_user_id INTEGER, 
+            is_directory INTEGER NOT NULL DEFAULT 0, 
+            is_deleted INTEGER NOT NULL DEFAULT 0,   
+            deleted_timestamp INTEGER,   
             FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL
         );
     )";
-
+    std::string metadata_index_sql = R"(
+    CREATE INDEX IF NOT EXISTS idx_file_metadata_path_deleted 
+    ON file_metadata (file_path, is_deleted);
+)";
 
     bool success = true;
     success &= execute(users_table_sql);

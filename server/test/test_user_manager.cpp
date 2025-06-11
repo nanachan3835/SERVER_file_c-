@@ -51,7 +51,7 @@ protected:
         // Clean up user directories created during tests
         // Be careful with this path, ensure it's indeed for testing.
         // If USER_DATA_ROOT from config.hpp was used, clean that.
-        fs::path user_root(USER_DATA_ROOT);
+        fs::path user_root(Config::USER_DATA_ROOT);
         if (fs::exists(user_root)) {
              for (const auto& entry : fs::directory_iterator(user_root)) {
                  if (fs::is_directory(entry.path())) {
@@ -71,7 +71,7 @@ TEST_F(UserManagerTest, RegisterNewUser) {
     ASSERT_GT(*user_id, 0);
 
     // Verify user directory was created
-    fs::path user_dir = fs::path(USER_DATA_ROOT) / "testuser1";
+    fs::path user_dir = fs::path(Config::USER_DATA_ROOT) / "testuser1";
     ASSERT_TRUE(fs::exists(user_dir)) << "User directory " << user_dir << " was not created.";
     ASSERT_TRUE(fs::is_directory(user_dir));
 }
@@ -105,7 +105,7 @@ TEST_F(UserManagerTest, DeleteUser) {
     ASSERT_TRUE(user_id_opt.has_value());
     int user_id = *user_id_opt;
 
-    fs::path user_dir = fs::path(USER_DATA_ROOT) / "testuser_to_delete";
+    fs::path user_dir = fs::path(Config::USER_DATA_ROOT) / "testuser_to_delete";
     ASSERT_TRUE(fs::exists(user_dir)) << "User directory for deletion test not created.";
 
 
@@ -126,7 +126,7 @@ TEST_F(UserManagerTest, GetHomeDir) {
     auto home_dir_opt = userManager->get_user_home_dir(*user_id_opt);
     ASSERT_TRUE(home_dir_opt.has_value());
 
-    fs::path expected_home_dir = fs::path(USER_DATA_ROOT) / "testuser_home";
+    fs::path expected_home_dir = fs::path(Config::USER_DATA_ROOT) / "testuser_home";
     // Compare canonical paths to handle potential differences in string representation (e.g. trailing slashes)
     ASSERT_EQ(fs::weakly_canonical(fs::path(*home_dir_opt)), fs::weakly_canonical(expected_home_dir));
 }

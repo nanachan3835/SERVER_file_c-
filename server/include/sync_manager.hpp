@@ -7,12 +7,15 @@
 #include <map>
 #include <Poco/Timestamp.h>
 #include <Poco/Path.h>
+#include "access_control.hpp"
 
 // Information about a file as reported by the client
 struct ClientSyncFileInfo {
     std::string relative_path;   // Path relative to the sync root
     Poco::Timestamp last_modified; // Client's timestamp
-    std::string checksum;          // Client's checksum
+    std::string checksum;
+    bool is_directory = false; 
+    bool is_deleted = false;          // Client's checksum
     // bool is_directory; // Optional: if client also syncs empty dirs
 };
 
@@ -23,8 +26,8 @@ struct ServerSyncFileInfo {
     Poco::Timestamp last_modified;    // Server's timestamp
     std::string checksum;             // Server's checksum
     int owner_user_id;
+    bool is_directory; // Optional
     int version;
-    // bool is_directory; // Optional
 };
 
 enum class SyncActionType {
@@ -61,7 +64,8 @@ public:
     std::vector<SyncOperation> determine_sync_actions(
         int user_id,
         const Poco::Path& server_sync_root_path,
-        const std::vector<ClientSyncFileInfo>& client_files
+        const std::vector<ClientSyncFileInfo>& client_files,
+        AccessControlManager& acm 
     );
 
 private:
@@ -71,6 +75,7 @@ private:
     // Fetches file metadata for a given sync root from the database.
     std::map<std::string, ServerSyncFileInfo> get_server_file_states(
         int user_id,
-        const Poco::Path& server_sync_root_path
+        const Poco::Path& server_sync_root_path,
+        AccessControlManager& acm
     );
 };

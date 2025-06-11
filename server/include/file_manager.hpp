@@ -36,10 +36,10 @@ public:
     // --- THÊM KHAI BÁO NÀY VÀO ---
     bool update_metadata_after_rename(const fs::path& old_abs_path_obj, const fs::path& new_abs_path_obj, int user_id);
     // -------------------------------
-
+    void update_file_metadata(const fs::path& full_server_path, int user_id = -1); 
 private:
     Database& db_;
-    void update_file_metadata(const fs::path& full_server_path, int user_id = -1); // Giữ nguyên user_id tùy chọn
+    //void update_file_metadata(const fs::path& full_server_path, int user_id = -1); // Giữ nguyên user_id tùy chọn
     void remove_file_metadata(const fs::path& full_server_path);
     // calculate_checksum đã được public rồi, không cần private nữa nếu muốn gọi từ ngoài
 };

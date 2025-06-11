@@ -126,12 +126,23 @@ bool FileManager::delete_file_or_directory(const fs::path& server_base_path, con
 
     try {
         if (fs::is_directory(full_server_path)) {
-            fs::remove_all(full_server_path); // Deletes directory and its contents
+           
+            for (const auto& entry : fs::recursive_directory_iterator(full_server_path)) {
+                remove_file_metadata(entry.path());
+            }
+            
+            remove_file_metadata(full_server_path);
+
+            
+            fs::remove_all(full_server_path);
         } else {
+            
+            remove_file_metadata(full_server_path);
             fs::remove(full_server_path);
         }
+        // --- KẾT THÚC SỬA ĐỔI ---
+
         std::cout << "Deleted: " << full_server_path << std::endl;
-        remove_file_metadata(full_server_path);
         return true;
     } catch (const fs::filesystem_error& e) {
         std::cerr << "Filesystem error deleting " << full_server_path << ": " << e.what() << std::endl;
@@ -153,6 +164,7 @@ bool FileManager::create_directory(const fs::path& server_base_path, const std::
             std::cout << "Created directory: " << full_server_path << std::endl;
             // Optionally, add metadata for directories if needed, e.g., for empty dir sync
             // update_file_metadata(full_server_path, user_id); // Or a specific dir metadata function
+            update_file_metadata(full_server_path, user_id);
             return true;
         } else {
              // It might already exist, which is not an error for create_directories
@@ -238,11 +250,15 @@ std::string FileManager::calculate_checksum(const fs::path& file_path_obj) {
 
 
 void FileManager::update_file_metadata(const fs::path& full_server_path_obj, int user_id) {
-    if (!fs::exists(full_server_path_obj) || fs::is_directory(full_server_path_obj)) {
-        if (fs::is_directory(full_server_path_obj)) return;
-    }
+    // if (!fs::exists(full_server_path_obj) || fs::is_directory(full_server_path_obj)) {
+    //     if (fs::is_directory(full_server_path_obj)) return;
+    // }
+    if (!fs::exists(full_server_path_obj)) return;
+    bool is_dir = fs::is_directory(full_server_path_obj);
     std::string full_server_path_str = fs::weakly_canonical(full_server_path_obj).string();
-    std::string checksum = calculate_checksum(full_server_path_obj);
+    std::string checksum = is_dir ? "" : calculate_checksum(full_server_path_obj);
+
+    //////////////////////////////
     auto ftime = fs::last_write_time(full_server_path_obj);
     // SỬA LỖI CHUYỂN ĐỔI THỜI GIAN
     std::chrono::time_point<std::chrono::system_clock> sctp(
@@ -261,22 +277,38 @@ void FileManager::update_file_metadata(const fs::path& full_server_path_obj, int
     // #endif
     sqlite3_stmt* stmt;
     std::string sql = R"(
-        INSERT INTO file_metadata (file_path, checksum, last_modified, owner_user_id, version)
-        VALUES (?, ?, ?, ?, 1)
+        INSERT INTO file_metadata (file_path, checksum, last_modified, owner_user_id, version, is_directory, is_deleted)
+        VALUES (?, ?, ?, ?, 1, ?, 0)
         ON CONFLICT(file_path) DO UPDATE SET
         checksum = excluded.checksum,
         last_modified = excluded.last_modified,
         owner_user_id = COALESCE(excluded.owner_user_id, owner_user_id),
-        version = version + 1;
+        version = version + 1,
+        is_directory = excluded.is_directory,
+        is_deleted = 0; -- Quan trọng: đảm bảo file được "hồi sinh" nếu được upload lại
     )";
 
     if (sqlite3_prepare_v2(db_.get_db_handle(), sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+        //////////////
         sqlite3_bind_text(stmt, 1, full_server_path_str.c_str(), -1, SQLITE_STATIC);
         sqlite3_bind_text(stmt, 2, checksum.c_str(), -1, SQLITE_STATIC);
         sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(last_modified));
-        if (user_id != -1) { sqlite3_bind_int(stmt, 4, user_id); }
-        else { sqlite3_bind_null(stmt, 4); }
-        if (sqlite3_step(stmt) != SQLITE_DONE) { /* log error */ }
+        if (user_id != -1) { sqlite3_bind_int(stmt, 4, user_id); } else { sqlite3_bind_null(stmt, 4); }
+        /////////////////
+        sqlite3_bind_int(stmt, 5, is_dir ? 1 : 0);
+        /////////////////
+        // Execute the statement
+         // Note: This will insert a new row or update an existing one
+         // If the file already exists, it will update the metadata
+         // If it doesn't exist, it will insert a new row
+
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            std::cerr << "Failed to update metadata for " << full_server_path_str << ": " << sqlite3_errmsg(db_.get_db_handle()) << std::endl;
+        } else {
+            std::cout << "Updated metadata for " << full_server_path_str << std::endl;
+        }
+         // Finalize the statement to release resources
+         // Note: This is important to avoid memory leaks
         sqlite3_finalize(stmt);
     } else {
         std::cerr << "Failed to prepare metadata statement for " << full_server_path_str << ": " << sqlite3_errmsg(db_.get_db_handle()) << std::endl;
@@ -285,41 +317,58 @@ void FileManager::update_file_metadata(const fs::path& full_server_path_obj, int
 
 void FileManager::remove_file_metadata(const fs::path& full_server_path_obj) {
     std::string full_server_path = fs::weakly_canonical(full_server_path_obj).string();
-    std::string sql = "DELETE FROM file_metadata WHERE file_path = ?;";
+    std::string sql = R"(
+        UPDATE file_metadata 
+        SET is_deleted = 1, deleted_timestamp = ? 
+        WHERE file_path = ? AND is_deleted = 0;
+    )";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_.get_db_handle(), sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, full_server_path.c_str(), -1, SQLITE_STATIC);
+        //sqlite3_bind_text(stmt, 1, full_server_path.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(std::time(nullptr))); // Set current time as deleted timestamp
+        sqlite3_bind_text(stmt, 2, full_server_path.c_str(), -1, SQLITE_STATIC);
+
         if (sqlite3_step(stmt) != SQLITE_DONE) {
-            std::cerr << "Failed to delete metadata for " << full_server_path << ": " << sqlite3_errmsg(db_.get_db_handle()) << std::endl;
+            std::cerr << "Failed to mark metadata as deleted for " << full_server_path << ": " << sqlite3_errmsg(db_.get_db_handle()) << std::endl;
         }
         sqlite3_finalize(stmt);
     } else {
-        std::cerr << "Failed to prepare metadata delete statement for " << full_server_path << ": " << sqlite3_errmsg(db_.get_db_handle()) << std::endl;
+         std::cerr << "Failed to prepare metadata delete (tombstone) statement for " << full_server_path << ": " << sqlite3_errmsg(db_.get_db_handle()) << std::endl;
     }
 }
 
 
 bool FileManager::update_metadata_after_rename(const fs::path& old_abs_path_obj, const fs::path& new_abs_path_obj, int user_id) {
-    std::string old_path_str = fs::weakly_canonical(old_abs_path_obj).string();
-    std::string new_path_str = fs::weakly_canonical(new_abs_path_obj).string();
-
-    // Read existing metadata if any
-    char* sql_get = sqlite3_mprintf("SELECT checksum, last_modified, version, owner_user_id FROM file_metadata WHERE file_path = %Q;", old_path_str.c_str());
-    // ... (execute scalar or row callback to get old data) ...
-    sqlite3_free(sql_get);
-    
-    // Delete old metadata entry
-    remove_file_metadata(old_abs_path_obj);
-    
-    // Re-insert/update metadata for new path
-    // If it was a directory, checksum might not apply or might be different
-    if (fs::is_regular_file(new_abs_path_obj)) {
-        update_file_metadata(new_abs_path_obj, user_id); // user_id might be the owner
-    } else if (fs::is_directory(new_abs_path_obj)) {
-        // Handle directory metadata if you store it (e.g. empty directories)
-        // For now, directories might not have checksums in file_metadata, or timestamp is enough.
-        // A simple approach for directories might be to just record their existence and timestamp.
-        // The current update_file_metadata might skip directories or handle them differently.
+    if (!fs::exists(new_abs_path_obj)) {
+        return false;
     }
-    return true; // Add error handling
+
+    if (fs::is_regular_file(new_abs_path_obj)) {
+        remove_file_metadata(old_abs_path_obj);
+        update_file_metadata(new_abs_path_obj, user_id);
+        return true;
+    }
+
+    
+    if (fs::is_directory(new_abs_path_obj)) {
+        std::string old_path_prefix = fs::weakly_canonical(old_abs_path_obj).string();
+        std::string new_path_prefix = fs::weakly_canonical(new_abs_path_obj).string();
+
+        char* sql_update_children = sqlite3_mprintf(
+            "UPDATE file_metadata SET file_path = REPLACE(file_path, %Q, %Q) WHERE file_path LIKE %Q || '/%%';",
+            old_path_prefix.c_str(),
+            new_path_prefix.c_str(),
+            old_path_prefix.c_str()
+        );
+
+        if (sql_update_children) {
+            db_.execute(sql_update_children);
+            sqlite3_free(sql_update_children);
+        }
+
+        remove_file_metadata(old_abs_path_obj);
+        return true;
+    }
+
+    return false; 
 }
