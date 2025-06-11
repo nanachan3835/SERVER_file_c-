@@ -353,12 +353,15 @@ bool FileManager::update_metadata_after_rename(const fs::path& old_abs_path_obj,
     if (fs::is_directory(new_abs_path_obj)) {
         std::string old_path_prefix = fs::weakly_canonical(old_abs_path_obj).string();
         std::string new_path_prefix = fs::weakly_canonical(new_abs_path_obj).string();
-
+        if (old_path_prefix.back() != fs::path::preferred_separator) old_path_prefix += fs::path::preferred_separator;
+        if (new_path_prefix.back() != fs::path::preferred_separator) new_path_prefix += fs::path::preferred_separator;
         char* sql_update_children = sqlite3_mprintf(
-            "UPDATE file_metadata SET file_path = REPLACE(file_path, %Q, %Q) WHERE file_path LIKE %Q || '/%%';",
-            old_path_prefix.c_str(),
-            new_path_prefix.c_str(),
-            old_path_prefix.c_str()
+        "UPDATE file_metadata "
+        "SET file_path = %Q || substr(file_path, %d) " // Nối prefix mới với phần còn lại của path cũ
+        "WHERE file_path LIKE %Q || '/%%';",
+        new_path_prefix.c_str(),
+        static_cast<int>(old_path_prefix.length()) + 1, // Vị trí bắt đầu của chuỗi con
+        old_path_prefix.c_str()
         );
 
         if (sql_update_children) {
