@@ -32,7 +32,7 @@ bool UserManager::verify_password(const std::string& password, const std::string
 }
 
 bool UserManager::create_user_directory(const std::string& username) {
-    fs::path user_dir = fs::path(USER_DATA_ROOT) / username;
+    fs::path user_dir = fs::path(Config::USER_DATA_ROOT) / username;
     try {
         if (!fs::exists(user_dir)) {
             if (fs::create_directories(user_dir)) {
@@ -78,7 +78,7 @@ std::optional<int> UserManager::register_user(const std::string& username, const
     }
 
     std::string hashed_password = hash_password(password);
-    fs::path home_dir_path = fs::path(USER_DATA_ROOT) / username;
+    fs::path home_dir_path = fs::path(Config::USER_DATA_ROOT) / username;
     std::string home_dir_str = home_dir_path.string(); // Store as string
 
     std::string insert_sql = "INSERT INTO users (username, password_hash, home_dir) VALUES (?, ?, ?);";

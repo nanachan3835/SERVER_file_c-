@@ -23,7 +23,7 @@ void free_watch_list(int fd);
 
 // Thêm watch đệ quy vào thư mục và thư mục con
 void add_watch_recursive(int fd, const char *root_path);
-
+void remove_watch_entry(int wd);
 #ifdef __cplusplus
 }
 #endif

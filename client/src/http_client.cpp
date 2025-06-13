@@ -14,6 +14,10 @@
 //#include <Poco/Net/ConnectionRefusedException.h>
 //#include <Poco/TimeoutException.h>
 //#include <Poco/Exception.h>
+#include <Poco/Net/NetException.h>
+#include <Poco/UUIDGenerator.h> // Thêm include này để tạo boundary duy nhất
+#include <Poco/String.h>
+
 
 
 
@@ -43,6 +47,9 @@ HttpClient::HttpClient(const std::string& base_url, Poco::Timespan timeout)
         server_uri_base_.setPath("/"); // Đảm bảo URI có path, ít nhất là "/"
     }
 }
+
+
+
 
 ApiResponse HttpClient::performRequest(Poco::Net::HTTPRequest& request, const std::string& requestBody, Poco::Net::HTTPClientSession* existingSession) {
     ApiResponse api_res;
@@ -126,13 +133,16 @@ ApiResponse HttpClient::performRequest(Poco::Net::HTTPRequest& request, const st
             }
         }
 
-    } catch (const Poco::Exception e) {
-        api_res.error_message = "Connection refused to " + server_uri_base_.getHost() + ":" + std::to_string(server_uri_base_.getPort()) + ". " + e.displayText();
-        api_res.error_code = ClientSyncErrorCode::ERROR_CONNECTION_FAILED;
-    } catch (const Poco::TimeoutException e) {
-        api_res.error_message = "Request to " + request.getURI() + " timed out. " + e.displayText();
+    } catch (const Poco::TimeoutException& e) { // Bắt TimeoutException cụ thể trước
+        api_res.error_message = "Request to " + request.getURI() + " timed out: " + e.displayText();
         api_res.error_code = ClientSyncErrorCode::ERROR_TIMEOUT;
-    } catch (const Poco::Exception e) {
+    } catch (const Poco::Net::ConnectionRefusedException& e) { // Bắt ConnectionRefusedException
+        api_res.error_message = "Connection refused to " + server_uri_base_.getHost() + ":" + std::to_string(server_uri_base_.getPort()) + ": " + e.displayText();
+        api_res.error_code = ClientSyncErrorCode::ERROR_CONNECTION_FAILED;
+    } catch (const Poco::Net::NetException& e) { // Bắt các lỗi mạng khác
+        api_res.error_message = "Network Exception for " + request.getURI() + ": " + e.displayText();
+        api_res.error_code = ClientSyncErrorCode::ERROR_CONNECTION_FAILED;
+    } catch (const Poco::Exception& e) { // Bắt các lỗi Poco chung chung cuối cùng
         api_res.error_message = "Poco HTTP Exception for " + request.getURI() + ": " + e.displayText();
         api_res.error_code = ClientSyncErrorCode::ERROR_UNKNOWN;
     }
@@ -142,7 +152,7 @@ ApiResponse HttpClient::performRequest(Poco::Net::HTTPRequest& request, const st
 
 ApiResponse HttpClient::performMultipartUpload(Poco::Net::HTTPRequest& request, Poco::Net::HTMLForm& form, Poco::Net::HTTPClientSession* existingSession) {
     ApiResponse api_res;
-     Poco::Net::HTTPClientSession localSession;
+    Poco::Net::HTTPClientSession localSession;
     Poco::Net::HTTPClientSession* session_ptr;
 
     if (existingSession) {
@@ -150,44 +160,92 @@ ApiResponse HttpClient::performMultipartUpload(Poco::Net::HTTPRequest& request, 
     } else {
         localSession.setHost(server_uri_base_.getHost());
         localSession.setPort(server_uri_base_.getPort());
-        localSession.setTimeout(default_timeout_); // Có thể cần timeout dài hơn cho upload
+        localSession.setTimeout(default_timeout_);
         session_ptr = &localSession;
     }
-    try {
-        form.prepareSubmit(request); // Chuẩn bị header (Content-Type, Content-Length) cho request
-        std::ostream& ostr = session_ptr->sendRequest(request);
-        form.write(ostr); // Ghi nội dung form (bao gồm file) vào stream
-        ostr.flush();
+    
+try {
+    // 1. Để Poco::Net::HTMLForm tự động chuẩn bị request.
+    //    Hàm này sẽ tạo boundary, set header "Content-Type" với boundary đó,
+    //    và tính toán chính xác "Content-Length" cho toàn bộ request body.
+    form.prepareSubmit(request);
 
-        Poco::Net::HTTPResponse http_res;
-        std::istream& rs = session_ptr->receiveResponse(http_res);
-        api_res.statusCode = http_res.getStatus();
-        // ... (Parse response body và xử lý lỗi tương tự như performRequest)
-        std::ostringstream data_oss;
-        Poco::StreamCopier::copyStream(rs, data_oss);
-        std::string response_body_str = data_oss.str();
-        api_res.raw_body_if_not_json = response_body_str;
-
-        std::string contentType = http_res.getContentType();
-        std::string::size_type pos = contentType.find(';');
-        if (pos != std::string::npos) contentType = contentType.substr(0, pos);
-
-        if (contentType == "application/json" && !response_body_str.empty()) {
-            try { api_res.body = json::parse(response_body_str); }
-            catch (const json::parse_error& e) {
-                api_res.error_message = "Upload: Malformed JSON response: " + std::string(e.what());
-                api_res.error_code = ClientSyncErrorCode::ERROR_JSON_PARSE;
-            }
-        }
-         if (api_res.statusCode < 200 || api_res.statusCode >= 300) {
-            // ... (Xử lý lỗi tương tự performRequest) ...
-        }
-
-    } catch (const Poco::Exception e) {
-        api_res.error_message = "Multipart Upload Poco Exception for " + request.getURI() + ": " + e.displayText();
-        api_res.error_code = ClientSyncErrorCode::ERROR_MULTIPART_FORM; // Lỗi cụ thể hơn
+    // 2. (Tùy chọn nhưng rất hữu ích) In ra các header đã được Poco chuẩn bị để debug.
+    //    Bạn sẽ thấy header Content-Type chứa một chuỗi boundary.
+    std::cout << "[Client Upload Debug] ---- Request Headers Prepared by Poco ----" << std::endl;
+    std::cout << "[Client Upload Debug] Method: " << request.getMethod() << ", URI: " << request.getURI() << std::endl;
+    std::cout << "[Client Upload Debug] Content-Type: " << request.getContentType() << std::endl;
+    std::cout << "[Client Upload Debug] Content-Length: " << request.getContentLength64() << std::endl;
+    if (request.has(HttpHeaders::AUTH_TOKEN)) {
+        std::cout << "[Client Upload Debug] X-Auth-Token: ... (present)" << std::endl;
     }
-    return api_res;
+    if (request.has(HttpHeaders::FILE_RELATIVE_PATH)) {
+        std::cout << "[Client Upload Debug] X-File-Relative-Path: " << request.get(HttpHeaders::FILE_RELATIVE_PATH) << std::endl;
+    }
+    std::cout << "[Client Upload Debug] -----------------------------------------" << std::endl;
+
+    // 3. Gửi request (chỉ chứa headers) đến server.
+    std::ostream& ostr = session_ptr->sendRequest(request);
+
+    // 4. Ghi nội dung của form (đã được định dạng với các boundary) vào stream.
+    //    Đây chính là bước gửi HTTP body.
+    form.write(ostr);
+    ostr.flush();
+
+    // 5. Nhận và xử lý phản hồi từ server (phần này giữ nguyên như cũ).
+    Poco::Net::HTTPResponse http_res;
+    std::istream& rs = session_ptr->receiveResponse(http_res);
+    api_res.statusCode = http_res.getStatus();
+
+    std::ostringstream data_oss;
+    Poco::StreamCopier::copyStream(rs, data_oss);
+    std::string response_body_str = data_oss.str();
+    api_res.raw_body_if_not_json = response_body_str;
+
+    // Xử lý response body và các mã lỗi...
+    if (http_res.getContentType().find("application/json") != std::string::npos && !response_body_str.empty()) {
+        try {
+            api_res.body = json::parse(response_body_str);
+        } catch (const json::parse_error& e) {
+            api_res.error_message = "Upload response: Malformed JSON: " + std::string(e.what());
+            api_res.error_code = ClientSyncErrorCode::ERROR_JSON_PARSE;
+        }
+    }
+    
+    // Nếu request không thành công, điền thông tin lỗi
+    if (!api_res.isSuccess() && api_res.error_code == ClientSyncErrorCode::SUCCESS) {
+        if (api_res.body.is_object() && api_res.body.contains(JsonKeys::MESSAGE)) {
+            api_res.error_message = api_res.body[JsonKeys::MESSAGE].get<std::string>();
+        } else if (!response_body_str.empty()) {
+            api_res.error_message = "Server error during upload: " + response_body_str.substr(0, 256);
+        } else {
+            api_res.error_message = "Server error during upload: " + http_res.getReason();
+        }
+
+        // Map status code sang error code của client
+        switch (api_res.statusCode) {
+            case Poco::Net::HTTPResponse::HTTP_BAD_REQUEST:    api_res.error_code = ClientSyncErrorCode::ERROR_BAD_REQUEST; break;
+            case Poco::Net::HTTPResponse::HTTP_UNAUTHORIZED:   api_res.error_code = ClientSyncErrorCode::ERROR_AUTH_FAILED; break;
+            case Poco::Net::HTTPResponse::HTTP_FORBIDDEN:      api_res.error_code = ClientSyncErrorCode::ERROR_FORBIDDEN; break;
+            case Poco::Net::HTTPResponse::HTTP_NOT_FOUND:      api_res.error_code = ClientSyncErrorCode::ERROR_NOT_FOUND; break;
+            default:                                           api_res.error_code = ClientSyncErrorCode::ERROR_SERVER_ERROR; break;
+        }
+    }
+
+} catch (const Poco::TimeoutException& e) {
+    api_res.error_message = "Multipart Upload Timed Out for " + request.getURI() + ": " + e.displayText();
+    api_res.error_code = ClientSyncErrorCode::ERROR_TIMEOUT;
+} catch (const Poco::Net::ConnectionRefusedException& e) {
+    api_res.error_message = "Connection refused during multipart upload for " + request.getURI() + ": " + e.displayText();
+    api_res.error_code = ClientSyncErrorCode::ERROR_CONNECTION_FAILED;
+} catch (const Poco::Net::NetException& e) {
+    api_res.error_message = "Network Exception during multipart upload for " + request.getURI() + ": " + e.displayText();
+    api_res.error_code = ClientSyncErrorCode::ERROR_CONNECTION_FAILED; // Lỗi kết nối chung
+} catch (const Poco::Exception& e) {
+    api_res.error_message = "Poco Exception during multipart upload for " + request.getURI() + ": " + e.displayText();
+    api_res.error_code = ClientSyncErrorCode::ERROR_MULTIPART_FORM; // Lỗi chung cho quá trình upload
+}
+return api_res;
 }
 
 
@@ -228,35 +286,69 @@ ApiResponse HttpClient::getCurrentUser(const std::string& token) {
 }
 
 // --- File Operations ---
+// http_client.cpp
+
 ApiResponse HttpClient::uploadFile(const std::string& token, const std::string& localFilePath, const std::string& serverRelativePath) {
     Poco::URI endpoint_uri(server_uri_base_);
-    endpoint_uri.setPath( Endpoints::FILES_UPLOAD);
+    endpoint_uri.setPath(Endpoints::FILES_UPLOAD);
 
     Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_POST, endpoint_uri.getPathAndQuery(), Poco::Net::HTTPMessage::HTTP_1_1);
     request.set(HttpHeaders::AUTH_TOKEN, token);
-    // Server của bạn có thể đọc relativePath từ header hoặc từ form field.
-    // Nếu server đọc từ header:
     request.set(HttpHeaders::FILE_RELATIVE_PATH, serverRelativePath);
 
-    Poco::Net::HTMLForm form;
-    form.setEncoding(Poco::Net::HTMLForm::ENCODING_MULTIPART);
-    // Nếu server đọc relativePath từ form field:
-    // form.addPart("relativePath", new Poco::Net::StringPartSource(serverRelativePath));
+    // Biến để chứa nội dung file
+    std::string fileContent;
 
-    // Kiểm tra file tồn tại trước khi tạo FilePartSource
-    Poco::File localFile(localFilePath);
-    if (!localFile.exists() || !localFile.isFile()) {
+    // Bước 1: Kiểm tra và đọc file vào biến fileContent
+    try {
+        Poco::File localFile(localFilePath);
+        if (!localFile.exists() || !localFile.isFile() || !localFile.canRead()) {
+            ApiResponse res;
+            res.error_message = "Local file is invalid or unreadable: " + localFilePath;
+            res.error_code = ClientSyncErrorCode::ERROR_LOCAL_FILE_IO;
+            return res;
+        }
+        
+        if (localFile.getSize() == 0) {
+            std::cout << "[HttpClient] Warning: Uploading a 0-byte file: " << localFilePath << std::endl;
+        }
+
+        std::ifstream fileStream(localFilePath, std::ios::binary);
+        if (!fileStream) {
+            ApiResponse res;
+            res.error_message = "Could not create ifstream for: " + localFilePath;
+            res.error_code = ClientSyncErrorCode::ERROR_LOCAL_FILE_IO;
+            return res;
+        }
+        
+        std::stringstream buffer;
+        buffer << fileStream.rdbuf();
+        fileContent = buffer.str(); // Gán nội dung vào biến fileContent
+        fileStream.close();
+
+    } catch (const Poco::Exception& e) {
+        std::cerr << "[HttpClient] Pre-flight check exception for " << localFilePath << ": " << e.displayText() << std::endl;
         ApiResponse res;
-        res.error_message = "Local file for upload not found or is not a file: " + localFilePath;
+        res.error_message = "Poco Exception during pre-flight check: " + e.displayText();
         res.error_code = ClientSyncErrorCode::ERROR_LOCAL_FILE_IO;
         return res;
     }
+    
+    // Bước 2: Tạo form và sử dụng StringPartSource với dữ liệu từ fileContent
+    Poco::Net::HTMLForm form;
+    form.setEncoding(Poco::Net::HTMLForm::ENCODING_MULTIPART);
+
     Poco::Path p(localFilePath);
-    form.addPart("file", new Poco::Net::FilePartSource(localFilePath, p.getFileName())); // Gửi tên file gốc
+
+    // --- ĐÂY LÀ DÒNG THAY ĐỔI QUAN TRỌNG NHẤT ---
+    // Sử dụng StringPartSource và biến fileContent đã đọc ở trên
+    form.addPart("file", new Poco::Net::StringPartSource(fileContent, p.getFileName(), "application/octet-stream"));
+    // --- KHÔNG DÙNG FilePartSource NỮA ---
+    // form.addPart("file", new Poco::Net::FilePartSource(localFilePath, p.getFileName())); 
 
     return performMultipartUpload(request, form);
 }
-
+//////downloadfile
 ClientSyncErrorCode HttpClient::downloadFile(const std::string& token, const std::string& serverRelativePath, const std::string& localSavePath) {
     Poco::Net::HTTPClientSession session(server_uri_base_.getHost(), server_uri_base_.getPort());
     session.setTimeout(default_timeout_); // Có thể cần timeout dài hơn cho download file lớn
@@ -306,10 +398,17 @@ ClientSyncErrorCode HttpClient::downloadFile(const std::string& token, const std
             if (http_res.getStatus() == Poco::Net::HTTPResponse::HTTP_UNAUTHORIZED) return ClientSyncErrorCode::ERROR_AUTH_FAILED;
             return ClientSyncErrorCode::ERROR_SERVER_ERROR;
         }
-    } catch (const Poco::Exception e) {
-        std::cerr << "HttpClient Download Exception for " << serverRelativePath << ": " << e.displayText() << std::endl;
-        if (std::string(e.className()) == "Poco::Net::ConnectionRefusedException") {return ClientSyncErrorCode::ERROR_CONNECTION_FAILED;}
-        if (dynamic_cast<const Poco::TimeoutException*>(&e)) return ClientSyncErrorCode::ERROR_TIMEOUT;
+    } catch (const Poco::TimeoutException& e) {
+        std::cerr << "HttpClient Download Timeout for " << serverRelativePath << ": " << e.displayText() << std::endl;
+        return ClientSyncErrorCode::ERROR_TIMEOUT;
+    } catch (const Poco::Net::ConnectionRefusedException& e) {
+        std::cerr << "HttpClient Download Connection Refused for " << serverRelativePath << ": " << e.displayText() << std::endl;
+        return ClientSyncErrorCode::ERROR_CONNECTION_FAILED;
+    } catch (const Poco::Net::NetException& e) {
+        std::cerr << "HttpClient Download Network Exception for " << serverRelativePath << ": " << e.displayText() << std::endl;
+        return ClientSyncErrorCode::ERROR_CONNECTION_FAILED;
+    } catch (const Poco::Exception& e) {
+        std::cerr << "HttpClient Download Poco Exception for " << serverRelativePath << ": " << e.displayText() << std::endl;
         return ClientSyncErrorCode::ERROR_UNKNOWN;
     }
 }

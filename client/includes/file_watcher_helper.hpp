@@ -172,13 +172,32 @@ class FileWatcherHelper {
                 std::cerr << "read() failed: " << strerror(errno) << "\n";
                 break;
             }
-
             int event_buf_offset = 0;
             while (watching && event_buf_offset < length) {
                 inotify_event *event = reinterpret_cast<inotify_event *>(&buffer[event_buf_offset]);
+                if (event->mask & IN_IGNORED) {
+                // Watch đã bị xóa (thường do thư mục bị xóa)
+                // Dọn dẹp nó khỏi danh sách của chúng ta
+                remove_watch_entry(event->wd);
+                event_buf_offset += EVENT_SIZE + event->len;
+                continue;
+                }
                 const char *base_path = get_path_from_wd(event->wd);
                 if (event->len && base_path) {
                     const std::string full_path = std::string(base_path) + "/" + event->name;
+                    {
+                    std::lock_guard<std::mutex> lock(ignored_paths_mutex_);
+                    //auto it = ignored_paths_once_.find(relative_path);
+                    auto it = ignored_paths_once_.find(full_path);
+                    if (it != ignored_paths_once_.end()) {
+            // Tìm thấy, đây là sự kiện cần bỏ qua
+                    //std::cout << "[Watcher] Ignoring event for: " << relative_path << std::endl;
+                    ignored_paths_once_.erase(it); // Xóa đi để lần sau không bỏ qua nữa
+                    event_buf_offset += EVENT_SIZE + event->len;
+                    continue; // Chuyển sang sự kiện tiếp theo
+                    }
+                    }
+
                     if (event->mask & IN_CREATE) {
                         handle_event_create(event, full_path);
                     }

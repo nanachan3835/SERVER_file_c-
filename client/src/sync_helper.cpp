@@ -173,50 +173,91 @@ void SyncHelper::performRenameOnServer(const std::string& oldServerRelativePath,
 
 json SyncHelper::buildClientManifest() {
     std::cout << "[SyncHelper] Building client manifest..." << std::endl;
-    // 1. Quét thư mục cục bộ để lấy trạng thái hiện tại
-    // watcher_root_path_ là đường dẫn tuyệt đối của thư mục gốc client đang theo dõi
     std::vector<LocalFileInfo> local_files = local_fs_->scanDirectoryRecursive(watcher_root_path_, watcher_root_path_);
     
-    // 2. Tạo client_manifest JSON
-    json client_manifest_payload = { {JsonKeys::CLIENT_FILES, json::array()} }; // Sử dụng JsonKeys
+    json client_manifest_payload = { {JsonKeys::CLIENT_FILES, json::array()} };
+    std::set<std::string> local_paths_set;
+
     for (const auto& local_file : local_files) {
-        if (!local_file.isDirectory) {
+        local_paths_set.insert(local_file.relativePath);
+        client_manifest_payload[JsonKeys::CLIENT_FILES].push_back({
+            {JsonKeys::RELATIVE_PATH, local_file.relativePath},
+            {JsonKeys::LAST_MODIFIED, local_file.lastModifiedPoco.epochTime()},
+            {JsonKeys::CHECKSUM, local_file.checksum},
+            {JsonKeys::IS_DIRECTORY, local_file.isDirectory}, // Thêm thông tin thư mục
+            {"is_deleted", false} // Thêm cờ is_deleted
+        });
+    }
+
+    // --- THÊM LOGIC PHÁT HIỆN XÓA Ở ĐÂY ---
+    for (const std::string& path_in_app_data : app_data_.paths_on_server) {
+        if (local_paths_set.find(path_in_app_data) == local_paths_set.end()) {
+            // File này có trong app_data nhưng không có trên đĩa -> đã bị xóa
+            std::cout << "[Manifest] Detected deleted local file: " << path_in_app_data << std::endl;
             client_manifest_payload[JsonKeys::CLIENT_FILES].push_back({
-                {JsonKeys::RELATIVE_PATH, local_file.relativePath},
-                {JsonKeys::LAST_MODIFIED, local_file.lastModifiedPoco.epochTime()},
-                {JsonKeys::CHECKSUM, local_file.checksum}
+                {JsonKeys::RELATIVE_PATH, path_in_app_data},
+                {"is_deleted", true} // Báo cho server biết file này đã bị xóa
             });
         }
     }
-    // TODO: Logic phát hiện file đã bị xóa cục bộ (so sánh với app_data_ hoặc snapshot đầy đủ hơn)
-    // và thêm thông tin xóa vào manifest.
-    // Ví dụ:
-    // for (const std::string& path_in_app_data : app_data_.paths_on_server) {
-    //     bool found_locally = false;
-    //     for (const auto& local_file : local_files) {
-    //         if (local_file.relativePath == path_in_app_data) {
-    //             found_locally = true;
-    //             break;
-    //         }
-    //     }
-    //     if (!found_locally) {
-    //         client_manifest_payload[JsonKeys::CLIENT_FILES].push_back({
-    //             {JsonKeys::RELATIVE_PATH, path_in_app_data},
-    //             {"status", "deleted_on_client"} // Server cần hiểu cờ này
-    //         });
-    //     }
-    // }
+    // --- KẾT THÚC THÊM LOGIC ---
+
     std::cout << "[SyncHelper] Client manifest built with " << client_manifest_payload[JsonKeys::CLIENT_FILES].size() << " items." << std::endl;
     return client_manifest_payload;
 }
 
+/// @brief ////////////////////////////////////////////////////////////////////////
+/// @param operationsArray 
 void SyncHelper::processServerOperations(const json& operationsArray) {
     std::cout << "[SyncHelper] Processing " << operationsArray.size() << " server operations..." << std::endl;
     if (!auth_manager_->ensureAuthenticated()) { // Đảm bảo xác thực trước khi bắt đầu một loạt operations
         std::cerr << "[SyncHelper] Authentication failed before processing server operations. Aborting." << std::endl;
         return;
     }
+    std::vector<json> createDirOps;
+    std::vector<json> otherOps;
 
+    for (const auto& op_json : operationsArray) {
+       std::string action_str = op_json.value(JsonKeys::SYNC_ACTION_TYPE, "");
+    std::string rel_path = op_json.value(JsonKeys::RELATIVE_PATH, "");
+    if (rel_path.empty()) continue;
+
+    // QUAN TRỌNG: Luôn dùng đường dẫn đầy đủ để kiểm tra
+    fs::path local_full_path = fs::path(watcher_root_path_) / rel_path;
+
+    if (action_str == "UPLOAD_TO_SERVER") {
+        // Kiểm tra lại điều kiện fs::exists() để tránh lỗi
+        if (fs::exists(local_full_path) && fs::is_directory(local_full_path)) {
+            createDirOps.push_back(op_json);
+        } else {
+            otherOps.push_back(op_json);
+        }
+    } else {
+        otherOps.push_back(op_json);
+    }
+}
+
+    std::sort(createDirOps.begin(), createDirOps.end(), [](const json& a, const json& b) {
+        std::string path_a = a.value(JsonKeys::RELATIVE_PATH, "");
+        std::string path_b = b.value(JsonKeys::RELATIVE_PATH, "");
+        return std::count(path_a.begin(), path_a.end(), '/') < std::count(path_b.begin(), path_b.end(), '/');
+    });
+    
+
+    std::cout << "[SyncHelper] Executing " << createDirOps.size() << " CREATE_DIRECTORY operations first..." << std::endl;
+    for (const auto& op_json : createDirOps) {
+        std::string rel_path = op_json.value(JsonKeys::RELATIVE_PATH, "");
+        try {
+            std::cout << "[SyncHelper] Creating directory on server: " << rel_path << std::endl;
+            ApiResponse res = http_client_->createDirectory(*(auth_manager_->getToken()), rel_path);
+            if (!res.isSuccess() && res.error_code != ClientSyncErrorCode::ERROR_CONFLICT) { // Bỏ qua lỗi "đã tồn tại"
+                std::cerr << "Failed to create directory '" << rel_path << "': " << res.error_message << std::endl;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Exception while creating directory '" << rel_path << "': " << e.what() << std::endl;
+        }
+    }
+    std::cout << "[SyncHelper] Executing " << otherOps.size() << " other operations..." << std::endl;
     for (const auto& op_json : operationsArray) {
         std::string action_str = op_json.value(JsonKeys::SYNC_ACTION_TYPE, "");
         std::string rel_path = op_json.value(JsonKeys::RELATIVE_PATH, "");
@@ -232,15 +273,12 @@ void SyncHelper::processServerOperations(const json& operationsArray) {
         
         try {
             if (action_str == "UPLOAD_TO_SERVER") {
-                // Server không có file này hoặc bản của client mới hơn.
-                // Client nên kiểm tra lại file cục bộ trước khi upload.
-                if (fs::exists(local_full_path_for_op) && !fs::is_directory(local_full_path_for_op)) {
-                    // watcher_.ignoreEventOnce(rel_path); // Không cần ignore cho upload từ client lên server
-                                                          // trừ khi server có thể ngay lập tức yêu cầu download lại chính file đó
-                                                          // trong một kịch bản phức tạp (hiếm).
-                    performUpload(rel_path); // rel_path ở đây là pathFromWatcherRoot
+                // Logic này giờ chỉ chạy cho file, vì thư mục đã được lọc ra
+                fs::path local_full_path_for_op = fs::path(watcher_root_path_) / rel_path;
+                if (fs::exists(local_full_path_for_op)) {
+                    performUpload(rel_path);
                 } else {
-                    std::cerr << "[SyncHelper] Server requested UPLOAD for non-existent/directory local file: " << rel_path << std::endl;
+                    std::cerr << "[SyncHelper] Server requested UPLOAD for non-existent local file: " << rel_path << std::endl;
                 }
             } else if (action_str == "DOWNLOAD_TO_CLIENT") {
                 std::cout << "[SyncHelper] Preparing to download: " << rel_path << std::endl;
@@ -290,10 +328,17 @@ void SyncHelper::processServerOperations(const json& operationsArray) {
             }
         } catch (const std::exception& e) {
             std::cerr << "[SyncHelper] Lỗi khi thực thi operation '" << action_str << "' cho '" << rel_path << "': " << e.what() << std::endl;
-            // Cân nhắc việc có nên dừng toàn bộ batch operations hay tiếp tục với file tiếp theo
         }
     }
 }
+
+
+
+
+
+
+
+
 
 
 void SyncHelper::triggerManifestSync() {

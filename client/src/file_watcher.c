@@ -78,3 +78,25 @@ void add_watch_recursive(int fd, const char *root_path) {
 
     closedir(dir);
 }
+
+
+// Thêm định nghĩa hàm remove_watch_entry
+void remove_watch_entry(int wd) {
+    WatchNode *curr = watch_list;
+    WatchNode *prev = NULL;
+    while (curr) {
+        if (curr->wd == wd) {
+            if (prev) {
+                prev->next = curr->next;
+            } else {
+                watch_list = curr->next;
+            }
+            printf("Unwatching wd=%d, path=%s\n", wd, curr->path);
+            free(curr->path);
+            free(curr);
+            return;
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+}

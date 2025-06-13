@@ -35,19 +35,22 @@ void AuthManager::invalidateToken() { // Đảm bảo hàm này được định
 
 bool AuthManager::ensureAuthenticated() {
     if (!current_token_.empty()) {
-        std::cout << "[AuthManager] Token exists. Verifying with server..." << std::endl;
-        // Gọi một API nhẹ để kiểm tra token, ví dụ /users/me
         ApiResponse me_res = http_client_.getCurrentUser(current_token_);
-        if (me_res.isSuccess()) { // isSuccess() kiểm tra cả status code và error_code
-            std::cout << "[AuthManager] Token is still valid." << std::endl;
-            return true;// Tạm thời coi token đã có là hợp lệ
-    }
-    // Nếu /users/me trả về lỗi (đặc biệt là 401), token không còn hợp lệ
-        std::cerr << "[AuthManager] Token verification failed (Code: " << me_res.statusCode
-                  << "). Error: " << me_res.error_message << ". Invalidating current token." << std::endl;
-        invalidateToken(); //
+        if (me_res.isSuccess()) {
+            return true;
+        }
 
-}
+        // --- SỬA LOGIC Ở ĐÂY ---
+        if (me_res.error_code == ClientSyncErrorCode::ERROR_AUTH_FAILED) { // Chỉ invalidate khi lỗi 401
+            std::cerr << "[AuthManager] Token is invalid (401). Invalidating." << std::endl;
+            invalidateToken();
+        } else {
+            // Với các lỗi khác (mạng, server 500), không invalidate token, chỉ báo lỗi và thử lại sau
+            std::cerr << "[AuthManager] Token verification failed with non-auth error: " << me_res.error_message << std::endl;
+            return false; // Trả về false để không tiếp tục login ngay, tránh bão request khi mạng lỗi
+        }
+        // --- KẾT THÚC SỬA LOGIC ---
+    }
     std::cout << "[AuthManager] No valid token, attempting new login." << std::endl;
     return login();
 }

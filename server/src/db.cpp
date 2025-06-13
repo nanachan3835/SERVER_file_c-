@@ -2,6 +2,10 @@
 #include "config.hpp" // For DATABASE_PATH
 #include <iostream>
 #include <stdexcept> // For std::runtime_error
+#include <filesystem>
+namespace fs = std::filesystem;
+
+
 
 Database::Database(const std::string& db_path) : db_path_(db_path) {
     if (!open(db_path_)) {

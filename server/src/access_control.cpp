@@ -69,15 +69,15 @@ PermissionLevel AccessControlManager::get_permission(int user_id, const fs::path
         if (parent == current_check_path_obj || // Reached filesystem root
             // Bây giờ user_home_path_for_check đã được khai báo ở scope này
             (!user_home_path_for_check.empty() && current_check_path_obj == user_home_path_for_check) || // Dừng nếu đã đến home của user
-            current_check_path_obj.string() == USER_DATA_ROOT || // Dừng nếu đến gốc của thư mục data/users
-            current_check_path_obj.string() == SHARED_DATA_ROOT ) { // Dừng nếu đến gốc của thư mục data/shared
+            current_check_path_obj.string() == Config::USER_DATA_ROOT || // Dừng nếu đến gốc của thư mục data/users
+            current_check_path_obj.string() == Config::SHARED_DATA_ROOT ) { // Dừng nếu đến gốc của thư mục data/shared
             break;
         }
         current_check_path_obj = parent;
     }
 
     // 3. Check shared_access if the resource_path is within a shared storage
-    fs::path shared_root_path_obj(SHARED_DATA_ROOT); // Không cần fs::weakly_canonical ở đây vì nó là hằng số
+    fs::path shared_root_path_obj(Config::SHARED_DATA_ROOT); // Không cần fs::weakly_canonical ở đây vì nó là hằng số
     // Chỉ canonicalize khi so sánh với resource_path_str đã được canonicalized
     if (resource_path_str.rfind(shared_root_path_obj.string(), 0) == 0) { // starts_with, dùng path string để so sánh prefix
         fs::path current_shared_candidate = canonical_resource_path; // Bắt đầu từ resource path
@@ -165,12 +165,12 @@ bool AccessControlManager::revoke_explicit_permission(int user_id, const fs::pat
 }
 
 bool AccessControlManager::create_shared_storage(const std::string& storage_name, int creating_user_id) {
-    fs::path storage_dir = fs::path(SHARED_DATA_ROOT) / storage_name;
+    fs::path storage_dir = fs::path(Config::SHARED_DATA_ROOT) / storage_name;
     fs::path canonical_storage_path;
 
     try {
-        if (!fs::exists(SHARED_DATA_ROOT)) {
-            fs::create_directories(SHARED_DATA_ROOT);
+        if (!fs::exists(Config::SHARED_DATA_ROOT)) {
+            fs::create_directories(Config::SHARED_DATA_ROOT);
         }
         if (!fs::exists(storage_dir)) {
             if (!fs::create_directories(storage_dir)) {

@@ -18,7 +18,7 @@
 //#include <Poco/Net/MessageHeader.h>
 //#include <Poco/Net/NameValueCollection.h>
 //#include <Poco/StreamCopier.h>
-
+#include <filesystem>                 
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -26,7 +26,7 @@
 // Thêm vào đầu file server.cpp
 #include <Poco/TemporaryFile.h>
 #include <Poco/File.h>
-
+namespace fs = std::filesystem;
 
 
 std::map<std::string, APIRouterHandler::ActiveSession> APIRouterHandler::active_sessions_;
@@ -214,52 +214,6 @@ void APIRouterHandler::handleRequest(HTTPServerRequest& request, HTTPServerRespo
 
 
     
-    // try {
-    //     // --- Public Endpoints ---
-    //     if (endpointPath == Endpoints::REGISTER && method == Poco::Net::HTTPRequest::HTTP_POST) {
-    //         handleUserRegister(request, response);
-    //     } else if (endpointPath == Endpoints::LOGIN && method == Poco::Net::HTTPRequest::HTTP_POST) {
-    //         handleUserLogin(request, response);
-    //     }
-    //     // --- Authenticated Endpoints ---
-    //     else if (current_session_opt) { // This implies needs_authentication was true and successful
-    //         const ActiveSession& session = *current_session_opt; // Now safe to use
-
-    //         if (endpointPath == Endpoints::LOGOUT && method == Poco::Net::HTTPRequest::HTTP_POST) {
-    //             handleUserLogout(request, response, session);
-    //         } else if (endpointPath == Endpoints::USER_ME && method == Poco::Net::HTTPRequest::HTTP_GET) {
-    //             handleUserMe(request, response, session);
-    //         } else if (endpointPath == Endpoints::FILES_UPLOAD && method == Poco::Net::HTTPRequest::HTTP_POST) {
-    //             handleFileUpload(request, response, session);
-    //         } else if (endpointPath == Endpoints::FILES_DOWNLOAD && method == Poco::Net::HTTPRequest::HTTP_GET) {
-    //             handleFileDownload(request, response, session);
-    //         } else if (endpointPath == Endpoints::FILES_LIST && method == Poco::Net::HTTPRequest::HTTP_GET) {
-    //             handleFileList(request, response, session);
-    //         } else if (endpointPath == Endpoints::FILES_MKDIR && method == Poco::Net::HTTPRequest::HTTP_POST) {
-    //             handleFileMkdir(request, response, session);
-    //         } else if (endpointPath == Endpoints::FILES_DELETE && method == Poco::Net::HTTPRequest::HTTP_DELETE) {
-    //             handleFileDelete(request, response, session);
-    //         } else if (endpointPath == Endpoints::FILES_RENAME && method == Poco::Net::HTTPRequest::HTTP_POST) {
-    //             handleFileRename(request, response, session);
-    //         } else if (endpointPath == Endpoints::SYNC_MANIFEST && method == Poco::Net::HTTPRequest::HTTP_POST) {
-    //             handleSyncManifest(request, response, session);
-    //         } else if (endpointPath == Endpoints::SHARED_CREATE_STORAGE && method == Poco::Net::HTTPRequest::HTTP_POST) {
-    //             handleCreateSharedStorage(request, response, session);
-    //         } else if (endpointPath == Endpoints::SHARED_GRANT_ACCESS && method == Poco::Net::HTTPRequest::HTTP_POST) {
-    //             handleGrantSharedAccess(request, response, session);
-    //         }
-    //         // ... more authenticated routes
-    //         else {
-    //             sendErrorResponse(response, HTTPResponse::HTTP_NOT_FOUND, "Authenticated API endpoint not found.");
-    //         }
-    //     } else if (needs_authentication) {
-    //         // This case should have been caught by the earlier check, but as a safeguard
-    //         sendErrorResponse(response, HTTPResponse::HTTP_UNAUTHORIZED, "Endpoint requires authentication, but no valid session found.");
-    //     } else {
-    //         // Public endpoint not matched
-    //         sendErrorResponse(response, HTTPResponse::HTTP_NOT_FOUND, "Public API endpoint not found.");
-    //     }
-
     try {
         // 1. Thử tìm trong các route public trước
         auto public_it = public_routes_.find(route_key);
@@ -412,36 +366,21 @@ void APIRouterHandler::handleUserMe(HTTPServerRequest& request, HTTPServerRespon
 }
 
 
-// File & Directory Handlers
+
+
 // void APIRouterHandler::handleFileUpload(HTTPServerRequest& request, HTTPServerResponse& response, const ActiveSession& session) {
-//     // if (request.getContentType().rfind("multipart/form-data", 0) != 0) {
-//     //     sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Content-Type must be multipart/form-data.");
-//     //     return;
-//     // }
-
-
-
+//     if (request.getContentType().rfind("multipart/form-data", 0) != 0) {
+//         sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Content-Type must be multipart/form-data.");
+//         return;
+        
+//     }
 //     std::string relative_path_from_header = request.get(HttpHeaders::FILE_RELATIVE_PATH, "");
 //     if (relative_path_from_header.empty() || Poco::Path(relative_path_from_header).isAbsolute() || relative_path_from_header.find("..") != std::string::npos) {
 //         sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid or missing '" + HttpHeaders::FILE_RELATIVE_PATH + "' header.");
 //         return;
 //     }
-//     std::cout << "[Server Upload] Received multipart request. Content-Type: " << request.getContentType() << std::endl;
 
-//     std::cout << "[SERVER DEBUG UPLOAD] User: " << session.username << ", HomeDir: " << session.home_dir << std::endl;
-//     std::cout << "[SERVER DEBUG UPLOAD] Request Content-Type: " << request.getContentType() << std::endl;
-//     std::cout << "[SERVER DEBUG UPLOAD] Request Content-Length: " << request.getContentLength() << std::endl;
-//     //std::string relative_path_from_header = request.get(HttpHeaders::FILE_RELATIVE_PATH, "");
-    
-//     std::cout << "[Server Upload] User: " << session.username << ", HomeDir: " << session.home_dir << std::endl;
-//     std::cout << "[Server Upload] Target relative path: '" << relative_path_from_header << "'" << std::endl;
-     
-     
- 
-    
- 
-
-
+//     std::cout << "[Server Upload] User: " << session.username << ", Target relative path: '" << relative_path_from_header << "'" << std::endl;
 
 //     class FileUploadPartHandler : public Poco::Net::PartHandler {
 //     public:
@@ -450,7 +389,6 @@ void APIRouterHandler::handleUserMe(HTTPServerRequest& request, HTTPServerRespon
 //         bool fileReceived = false;
 
 //         void handlePart(const Poco::Net::MessageHeader& header, std::istream& stream) override {
-//             // Chỉ xử lý part đầu tiên là "file"
 //             if (fileReceived) return;
 
 //             Poco::Net::NameValueCollection params;
@@ -459,146 +397,183 @@ void APIRouterHandler::handleUserMe(HTTPServerRequest& request, HTTPServerRespon
 //                 disposition = header.get("Content-Disposition");
 //                 Poco::Net::MessageHeader::splitParameters(disposition, disposition, params);
 //             }
-
-//             // Chúng ta chỉ quan tâm đến part có name="file"
+            
 //             if (params.get("name", "") == "file") {
 //                 originalFileName = params.get("filename", "(unspecified)");
-//                 if (originalFileName.empty() || originalFileName == "(unspecified)") {
-//                     // Nếu không có tên file, chúng ta không thể xử lý
-//                     return;
-//                 }
+//                 if (originalFileName.empty() || originalFileName == "(unspecified)") return;
 
-//                 // Tạo một file tạm để lưu nội dung upload
-//                 Poco::TemporaryFile tempFile;
+//                 Poco::TemporaryFile tempFile; // Sẽ hoạt động sau khi include
 //                 tempFilePath = tempFile.path();
+                
+
+
+
+
+                
 //                 std::cout << "[Server Upload] Streaming to temporary file: " << tempFilePath << std::endl;
 
-//                 // Mở file tạm để ghi
 //                 std::ofstream outfile(tempFilePath, std::ios::binary | std::ios::trunc);
-//                 if (!outfile) {
-//                     std::cerr << "Failed to open temporary file for writing: " << tempFilePath << std::endl;
-//                     return;
-//                 }
+//                 if (!outfile) return;
 
-//                 // Stream dữ liệu từ request vào file tạm
 //                 Poco::StreamCopier::copyStream(stream, outfile);
 //                 outfile.close();
-
 //                 fileReceived = true;
 //             }
 //         }
 //     };
+//     Poco::Int64 contentLength = request.getContentLength();
+//     std::cout << "[Server Upload Debug] Received Content-Length header: " << contentLength << std::endl;
+//     if (contentLength == Poco::Net::HTTPMessage::UNKNOWN_CONTENT_LENGTH || contentLength == 0) {
+//         sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Content-Length is missing or zero.");
+//         return;
+//     }
+//     try {
+//         FileUploadPartHandler partHandler;
+//         Poco::Net::HTMLForm form(request, request.stream(), partHandler);
 
-    
-    //HTMLForm form_processor(partHandler); // Chỉ định PartHandler
-    //Poco::Net::HTMLForm form_processor(request, request.stream(), partHandler);
-    // Poco::Net::HTMLForm form_processor(request.getContentType(), partHandler); // Cần contentType
-//     
+//         if (!partHandler.fileReceived || partHandler.tempFilePath.empty()) {
+//             sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Missing or invalid 'file' part in multipart form.");
+//             if (!partHandler.tempFilePath.empty()) Poco::File(partHandler.tempFilePath).remove();
+//             return;
+//         }
 
+//         fs::path target_abs_fs_path = file_manager_.resolve_safe_path(session.home_dir, relative_path_from_header);
+//         if (target_abs_fs_path.empty()) {
+//             sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Path resolution failed for upload.");
+//             Poco::File(partHandler.tempFilePath).remove();
+//             return;
+//         }
+
+//         PermissionLevel perm = access_control_manager_.get_permission(session.user_id, target_abs_fs_path.parent_path());
+//         if (perm < PermissionLevel::READ_WRITE) {
+//             sendErrorResponse(response, HTTPResponse::HTTP_FORBIDDEN, "Permission denied to write to target location.");
+//             Poco::File(partHandler.tempFilePath).remove();
+//             return;
+//         }
+
+//         fs::create_directories(target_abs_fs_path.parent_path());
+//         ////bắt đầu logic ghi file   
+//         Poco::File tempPocoFile(partHandler.tempFilePath);
+//         tempPocoFile.moveTo(target_abs_fs_path.string());
+
+//         std::cout << "[Server Upload] File moved from temp to: " << target_abs_fs_path << std::endl;
+
+//         // std::ifstream final_file(target_abs_fs_path, std::ios::binary | std::ios::ate);
+//         // std::streamsize size = final_file.tellg();
+//         // final_file.seekg(0, std::ios::beg);
+//         // std::vector<char> file_data(size);
+//         // if (final_file.read(file_data.data(), size)) {
+//         //     if (file_manager_.upload_file(session.home_dir, relative_path_from_header, file_data, session.user_id)) {
+//         //         sendSuccessResponse(response, "File '" + relative_path_from_header + "' uploaded successfully.", HTTPResponse::HTTP_CREATED);
+//         //     } else {
+//         //         sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "File upload failed during final metadata update.");
+//         //     }
+//         // } else {
+//         //     sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "Could not read final file for metadata update.");
+//         // }
+//         file_manager_.update_file_metadata(target_abs_fs_path, session.user_id);
+//         sendSuccessResponse(response, "File '" + relative_path_from_header + "' uploaded successfully.", HTTPResponse::HTTP_CREATED);
+
+//     } catch (const Poco::Exception& e) {
+//         std::cerr << "[Server Upload] Poco::Exception: " << e.displayText() << std::endl;
+//         sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "Server error during upload: " + e.displayText());
+//     } catch (const std::exception& e) {
+//         std::cerr << "[Server Upload] std::exception: " << e.what() << std::endl;
+//         sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "Generic server error during upload: " + std::string(e.what()));
+//     }
+// }
 void APIRouterHandler::handleFileUpload(HTTPServerRequest& request, HTTPServerResponse& response, const ActiveSession& session) {
+    std::cout << "[Server Upload] Received upload request from user: " << session.username << std::endl;
+    std::cout << "[Server Upload Debug] Request Content-Type: " << request.getContentType() << std::endl;
+
     if (request.getContentType().rfind("multipart/form-data", 0) != 0) {
         sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Content-Type must be multipart/form-data.");
         return;
     }
 
-    std::string relative_path_from_header = request.get(HttpHeaders::FILE_RELATIVE_PATH, "");
-    if (relative_path_from_header.empty() || Poco::Path(relative_path_from_header).isAbsolute() || relative_path_from_header.find("..") != std::string::npos) {
-        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid or missing '" + HttpHeaders::FILE_RELATIVE_PATH + "' header.");
-        return;
-    }
-
-    std::cout << "[Server Upload] User: " << session.username << ", Target relative path: '" << relative_path_from_header << "'" << std::endl;
-
     class FileUploadPartHandler : public Poco::Net::PartHandler {
     public:
-        std::string tempFilePath;
+        std::string relativePathFromField;
         std::string originalFileName;
-        bool fileReceived = false;
+        std::unique_ptr<std::ostringstream> pFileStream;
+
+        FileUploadPartHandler() : pFileStream(std::make_unique<std::ostringstream>()) {}
 
         void handlePart(const Poco::Net::MessageHeader& header, std::istream& stream) override {
-            if (fileReceived) return;
-
             Poco::Net::NameValueCollection params;
-            std::string disposition;
             if (header.has("Content-Disposition")) {
-                disposition = header.get("Content-Disposition");
-                Poco::Net::MessageHeader::splitParameters(disposition, disposition, params);
+                std::string disposition = header.get("Content-Disposition");
+                std::string mainValue; 
+
+                // ---- SỬA LỖI 1: SỬ DỤNG ĐÚNG PHIÊN BẢN splitParameters ----
+                Poco::Net::MessageHeader::splitParameters(disposition, mainValue, params);
             }
 
-            if (params.get("name", "") == "file") {
+            std::string fieldName = params.get("name", "");
+
+            if (fieldName == "file") {
                 originalFileName = params.get("filename", "(unspecified)");
-                if (originalFileName.empty() || originalFileName == "(unspecified)") return;
-
-                Poco::TemporaryFile tempFile; // Sẽ hoạt động sau khi include
-                tempFilePath = tempFile.path();
-                std::cout << "[Server Upload] Streaming to temporary file: " << tempFilePath << std::endl;
-
-                std::ofstream outfile(tempFilePath, std::ios::binary | std::ios::trunc);
-                if (!outfile) return;
-
-                Poco::StreamCopier::copyStream(stream, outfile);
-                outfile.close();
-                fileReceived = true;
+                Poco::StreamCopier::copyStream(stream, *pFileStream);
+            } else if (fieldName == "relativePath") {
+                Poco::StreamCopier::copyToString(stream, relativePathFromField);
             }
         }
     };
 
+    FileUploadPartHandler partHandler;
     try {
-        FileUploadPartHandler partHandler;
+        // ---- SỬA LỖI 2: QUAY LẠI CÁCH KHỞI TẠO HTMLForm ĐÚNG VÀ AN TOÀN NHẤT ----
+        // Cách này sẽ đọc Content-Type từ request và parse request.stream()
+        // Nó sẽ gọi partHandler khi gặp các part.
         Poco::Net::HTMLForm form(request, request.stream(), partHandler);
 
-        if (!partHandler.fileReceived || partHandler.tempFilePath.empty()) {
-            sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Missing or invalid 'file' part in multipart form.");
-            if (!partHandler.tempFilePath.empty()) Poco::File(partHandler.tempFilePath).remove();
+        // Sau khi constructor của HTMLForm chạy xong, partHandler đã chứa tất cả dữ liệu.
+        
+        std::string final_relative_path = request.get(HttpHeaders::FILE_RELATIVE_PATH, "");
+        if (final_relative_path.empty()) {
+            final_relative_path = partHandler.relativePathFromField;
+        }
+
+        std::cout << "[Server Upload Debug] Final target relative path: '" << final_relative_path << "'" << std::endl;
+        std::cout << "[Server Upload Debug] Original filename from part: '" << partHandler.originalFileName << "'" << std::endl;
+        
+        if (final_relative_path.empty() || Poco::Path(final_relative_path).isAbsolute() || final_relative_path.find("..") != std::string::npos) {
+            sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Invalid or missing 'relativePath'.");
+            return;
+        }
+        
+        if (!partHandler.pFileStream || partHandler.originalFileName.empty() || partHandler.originalFileName == "(unspecified)") {
+            sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Missing or invalid 'file' part in the multipart form.");
             return;
         }
 
-        fs::path target_abs_fs_path = file_manager_.resolve_safe_path(session.home_dir, relative_path_from_header);
-        if (target_abs_fs_path.empty()) {
-            sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Path resolution failed for upload.");
-            Poco::File(partHandler.tempFilePath).remove();
-            return;
+        std::string file_content_str = partHandler.pFileStream->str();
+        if (file_content_str.empty()) {
+            std::cout << "[Server Upload] Warning: Received a 0-byte file upload for " << final_relative_path << std::endl;
         }
+        std::vector<char> file_data_vec(file_content_str.begin(), file_content_str.end());
 
+        fs::path target_abs_fs_path = fs::path(session.home_dir) / final_relative_path;
         PermissionLevel perm = access_control_manager_.get_permission(session.user_id, target_abs_fs_path.parent_path());
         if (perm < PermissionLevel::READ_WRITE) {
-            sendErrorResponse(response, HTTPResponse::HTTP_FORBIDDEN, "Permission denied to write to target location.");
-            Poco::File(partHandler.tempFilePath).remove();
+            sendErrorResponse(response, HTTPResponse::HTTP_FORBIDDEN, "Permission denied to write to the target location.");
             return;
         }
-
-        fs::create_directories(target_abs_fs_path.parent_path());
-        ////bắt đầu logic ghi file   
-        Poco::File tempPocoFile(partHandler.tempFilePath);
-        tempPocoFile.moveTo(target_abs_fs_path.string());
-
-        std::cout << "[Server Upload] File moved from temp to: " << target_abs_fs_path << std::endl;
-
-        // std::ifstream final_file(target_abs_fs_path, std::ios::binary | std::ios::ate);
-        // std::streamsize size = final_file.tellg();
-        // final_file.seekg(0, std::ios::beg);
-        // std::vector<char> file_data(size);
-        // if (final_file.read(file_data.data(), size)) {
-        //     if (file_manager_.upload_file(session.home_dir, relative_path_from_header, file_data, session.user_id)) {
-        //         sendSuccessResponse(response, "File '" + relative_path_from_header + "' uploaded successfully.", HTTPResponse::HTTP_CREATED);
-        //     } else {
-        //         sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "File upload failed during final metadata update.");
-        //     }
-        // } else {
-        //     sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "Could not read final file for metadata update.");
-        // }
-        file_manager_.update_file_metadata(target_abs_fs_path, session.user_id);
-        sendSuccessResponse(response, "File '" + relative_path_from_header + "' uploaded successfully.", HTTPResponse::HTTP_CREATED);
+        
+        if (file_manager_.upload_file(session.home_dir, final_relative_path, file_data_vec, session.user_id)) {
+            sendSuccessResponse(response, "File '" + final_relative_path + "' uploaded successfully.", HTTPResponse::HTTP_CREATED);
+        } else {
+            sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "File upload failed on the server.");
+        }
 
     } catch (const Poco::Exception& e) {
-        std::cerr << "[Server Upload] Poco::Exception: " << e.displayText() << std::endl;
-        sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "Server error during upload: " + e.displayText());
+        std::cerr << "[Server Upload] Poco::Exception caught: " << e.displayText() << std::endl;
+        sendErrorResponse(response, HTTPResponse::HTTP_BAD_REQUEST, "Bad Request: Could not parse multipart form. " + e.displayText());
     } catch (const std::exception& e) {
-        std::cerr << "[Server Upload] std::exception: " << e.what() << std::endl;
-        sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "Generic server error during upload: " + std::string(e.what()));
+        std::cerr << "[Server Upload] std::exception caught: " << e.what() << std::endl;
+        sendErrorResponse(response, HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, "An unexpected server error occurred during upload.");
     }
 }
-
 
 
 

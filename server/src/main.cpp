@@ -1,11 +1,11 @@
 #include "db.hpp"
-#include "config.hpp"
+#include "config.hpp" // Bao gồm file config mới
 #include "user_manager.hpp"
 #include "file_manager.hpp"
 #include "sync_manager.hpp"
 #include "access_control.hpp"
 #include "server.hpp"
-#include <filesystem> // Cho fs::current_path()
+#include <filesystem>
 #include <Poco/Net/ServerSocket.h>
 #include <Poco/Net/HTTPServer.h>
 #include <Poco/Net/HTTPServerParams.h>
@@ -17,9 +17,16 @@
 #include <csignal>
 #include <memory>
 
+namespace fs = std::filesystem;
 
-namespace fs = std::filesystem; 
-
+// Khởi tạo các biến static trong file .cpp để tránh lỗi "multiple definition"
+// unsigned short Config::HTTP_SERVER_PORT;
+// std::string Config::SERVER_BASE_URL;
+// std::string Config::DATABASE_PATH;
+// std::string Config::USER_DATA_ROOT;
+// std::string Config::SHARED_DATA_ROOT;
+// int Config::PASSWORD_SALT_LENGTH;
+// int Config::HASH_ITERATIONS;
 
 
 class FileServerApp : public Poco::Util::ServerApplication {
@@ -28,11 +35,25 @@ public:
 
 protected:
     void initialize(Application& self) override {
-        loadConfiguration();
+        // Load cấu hình từ file `config.properties` (tên file được suy ra từ tên executable)
+        // hoặc file được chỉ định qua command line --config-file=myconfig.properties
+        loadConfiguration(); 
         ServerApplication::initialize(self);
         logger().information("FileServerApp initializing...");
+        loadConfigFromFile("../config.properties"); // Load cấu hình từ file config
+        // *** BẮT ĐẦU LOAD CẤU HÌNH VÀO STRUCT CONFIG ***
+        // Config::HTTP_SERVER_PORT = (unsigned short)config().getUInt("server.port", 8080);
+        // Config::DATABASE_PATH = config().getString("database.path", "db/file_server.db");
+        // Config::USER_DATA_ROOT = config().getString("storage.users_root", "data/users");
+        // Config::SHARED_DATA_ROOT = config().getString("storage.shared_root", "data/shared");
+        // Config::PASSWORD_SALT_LENGTH = config().getInt("security.salt_length", 16);
+        // Config::HASH_ITERATIONS = config().getInt("security.hash_iterations", 10000);
+        // Config::SERVER_BASE_URL = "http://localhost:" + std::to_string(Config::HTTP_SERVER_PORT);
+        logger().information("Configuration loaded. Port: " + std::to_string(Config::HTTP_SERVER_PORT));
+        // *** KẾT THÚC LOAD CẤU HÌNH ***
 
-        db_ = std::make_unique<Database>(DATABASE_PATH);
+        // Sử dụng các biến từ Config struct
+        db_ = std::make_unique<Database>(Config::DATABASE_PATH);
         if (!db_->get_db_handle()) { logger().fatal("DB init failed."); terminate(); return; }
         if (!db_->initialize_schema()) { logger().fatal("DB schema init failed."); terminate(); return; }
         logger().information("Database initialized.");
@@ -40,7 +61,6 @@ protected:
         userManager_ = std::make_unique<UserManager>(*db_);
         fileManager_ = std::make_unique<FileManager>(*db_);
         syncManager_ = std::make_unique<SyncManager>(*db_, *fileManager_);
-        // SỬA LỖI: Tên biến và truyền đủ tham số
         access_controlManager_ = std::make_unique<AccessControlManager>(*db_, *userManager_);
 
         logger().information("Managers initialized.");
@@ -74,17 +94,17 @@ protected:
             logger().fatal("Core components not initialized."); return Application::EXIT_CONFIG;
         }
 
-        Poco::Net::ServerSocket svs(HTTP_SERVER_PORT);
+        Poco::Net::ServerSocket svs(Config::HTTP_SERVER_PORT); // Sử dụng config
         Poco::Net::HTTPServerParams::Ptr pParams = new Poco::Net::HTTPServerParams;
         pParams->setMaxQueued(100); pParams->setMaxThreads(16);
 
         httpServer_ = std::make_unique<Poco::Net::HTTPServer>(
-            new FileServerRequestHandlerFactory(*db_, *userManager_, *fileManager_, *syncManager_, *access_controlManager_), // SỬA LỖI: Tên biến
+            new FileServerRequestHandlerFactory(*db_, *userManager_, *fileManager_, *syncManager_, *access_controlManager_),
             svs, pParams
         );
 
         httpServer_->start();
-        logger().information("HTTP Server started on port " + std::to_string(HTTP_SERVER_PORT));
+        logger().information("HTTP Server started on port " + std::to_string(Config::HTTP_SERVER_PORT));
         waitForTerminationRequest();
         logger().information("Stopping HTTP server...");
         httpServer_->stop();
@@ -99,7 +119,7 @@ private:
     std::unique_ptr<UserManager> userManager_;
     std::unique_ptr<FileManager> fileManager_;
     std::unique_ptr<SyncManager> syncManager_;
-    std::unique_ptr<AccessControlManager> access_controlManager_; // Tên biến đúng
+    std::unique_ptr<AccessControlManager> access_controlManager_;
 };
 
 int main(int argc, char** argv) {
